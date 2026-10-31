@@ -3,8 +3,8 @@
 A Discord soundboard bot. Slash commands only; voice goes through discord.py with DAVE, the
 end-to-end encryption Discord has required on every voice connection since March 2026.
 
-Current state: `/join`, `/leave` and `/play` with a built-in test sound. Uploads, the per-server
-sound library, `/list` and the anti-spam safeguards come next.
+Each server gets its own sound library. Uploaded files are checked, normalised to the same
+loudness and converted once to Opus, so playback needs no transcoding.
 
 ## Requirements
 
@@ -92,10 +92,60 @@ uv run --env-file .env minie run
 | Command | What it does |
 |---|---|
 | `/join` | Joins your voice channel, self-deafened since it never listens |
-| `/leave` | Leaves the voice channel |
-| `/play` | Plays a one-second test tone. You must be in the bot's channel. A new sound cuts off the current one |
+| `/leave` | Leaves the voice channel and drops any queued sounds |
+| `/play [sound]` | Plays a sound, with autocomplete on the server's sounds. Without a name, plays a one-second test tone |
+| `/stop` | Stops the current sound and clears the queue |
+| `/add <name> <file>` | Adds a sound from an attached audio file: MP3, WAV, Ogg, FLAC, M4A or WebM |
+| `/list` | Lists the server's sounds with their lengths |
+| `/remove <sound>` | Removes a sound. Allowed for whoever added it, and for members with Manage Server |
 
-Replies are only visible to whoever ran the command.
+- `/play` and `/stop` only work for members in the bot's voice channel.
+- Sound names are 1 to 32 characters: letters, digits, `-` and `_`. Case is ignored.
+- Anyone can use `/add` by default. To restrict it to some roles, open Server Settings >
+  Integrations and pick the bot. No code change is needed.
+- Replies are only visible to whoever ran the command, and never ping anyone.
+
+## Settings
+
+All optional, in `.env`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MINIE_MAX_UPLOAD_MB` | `8` | Largest file accepted, as uploaded |
+| `MINIE_MAX_DURATION_S` | `10` | Longest clip accepted, in seconds |
+| `MINIE_LOUDNESS_LUFS` | `-16` | Loudness every sound is normalised to |
+| `MINIE_TRUE_PEAK_DBTP` | `-1.5` | Ceiling for peaks after normalisation |
+| `MINIE_MAX_SOUNDS` | `100` | Sounds per server |
+| `MINIE_COOLDOWN_S` | `3` | Seconds between two sounds from the same member; `0` disables it |
+| `MINIE_OVERLAP` | `interrupt` | When a sound is already playing: `interrupt` cuts it off, `queue` plays the new one afterwards |
+| `MINIE_QUEUE_MAX` | `5` | Sounds that can wait in `queue` mode |
+| `MINIE_DATA_DIR` | `data` | Where the database and sounds are stored |
+
+`interrupt` is the default because it feels immediate, and spamming `/play` can't build up a
+backlog of sounds.
+
+## How uploads are processed
+
+1. Before downloading, the bot checks the name, the file size and the server's sound count.
+2. ffprobe identifies the format and the length the file claims. Clips over the limit are
+   refused.
+3. FFmpeg measures the loudness (loudnorm, first pass) and refuses silent clips.
+4. A second pass applies one constant gain to reach the target, and encodes to Ogg/Opus:
+   48 kHz, stereo, 96 kb/s, 20 ms frames. loudnorm only compresses when that gain would push
+   peaks above the true peak ceiling.
+5. The real length is checked on the encoded result, whatever the file claimed. The decoder
+   never reads more than one second past the limit.
+
+Uploaded files are untrusted input to FFmpeg, so:
+
+- Only a fixed list of demuxers may read an upload (FFmpeg's `-format_whitelist`), and FFmpeg
+  gets no network access (`-protocol_whitelist file`). Some formats, such as HLS playlists, make
+  FFmpeg open other files or URLs named inside them; those are refused before they're parsed.
+- Each FFmpeg run is killed after 60 s, and at most two conversions run at once.
+- Tags and chapters are stripped, and files are stored under random names.
+
+FFmpeg's decoders still parse the upload. The container the bot runs in is the isolation
+boundary for that.
 
 ## Logs
 
@@ -138,7 +188,10 @@ src/minie/
 ├── preflight.py                # voice stack check run by `minie check` and `minie run`
 ├── bot.py                      # discord.Client, command tree, error handling, command sync
 ├── commands/                   # slash commands; they only talk to the services below
-├── audio.py                    # FFmpeg: everything is encoded once to Ogg/Opus, 48 kHz, 20 ms frames
+├── library.py                  # per-server sounds: upload rules, files, frames for playback
+├── store.py                    # SQLite metadata, with numbered schema migrations
+├── audio.py                    # FFmpeg: probe, loudness, encode once to Ogg/Opus (20 ms frames)
+├── playback.py                 # cooldown, then interrupt or queue, above VoicePlayer
 └── voice/
     ├── base.py                 # VoicePlayer: the interface the rest of the bot uses
     ├── discordpy.py            # VoicePlayer implemented with discord.py
@@ -150,4 +203,14 @@ implementation can replace `voice/discordpy.py` without touching the commands. d
 `VoiceProtocol` hook (`channel.connect(cls=...)`) hands such a replacement the voice server
 credentials, after which it runs the voice WebSocket, UDP/RTP transport and DAVE itself.
 
-Runtime files live in `data/` (git-ignored). For now that's only the generated test tone.
+Uploads and playback rules live in `library.py` and `playback.py` rather than in the commands,
+so the planned web UI can reuse them unchanged.
+
+Runtime files live in `data/` (git-ignored):
+
+- `minie.db`: the SQLite database, in WAL mode;
+- `sounds/<server ID>/<random ID>.ogg`: the converted sounds;
+- `builtin/test-tone.ogg`: generated at startup;
+- `tmp/`: uploads being converted.
+
+Back up `minie.db` and `sounds/` together.

@@ -5,10 +5,11 @@ from discord import app_commands
 
 from minie.commands.common import invoking_member, reply, voice_channel_of
 from minie.errors import UserError
+from minie.playback import PlaybackService
 from minie.voice.base import VoicePlayer
 
 
-def register(tree: app_commands.CommandTree, voice: VoicePlayer) -> None:
+def register(tree: app_commands.CommandTree, voice: VoicePlayer, playback: PlaybackService) -> None:
     @tree.command(name="join", description="Join your voice channel")
     async def join(interaction: discord.Interaction) -> None:
         guild, member = invoking_member(interaction)
@@ -28,6 +29,7 @@ def register(tree: app_commands.CommandTree, voice: VoicePlayer) -> None:
         guild, _ = invoking_member(interaction)
         was_connected = voice.connected_channel_id(guild.id) is not None
         await interaction.response.defer(ephemeral=True, thinking=True)
+        await playback.stop(guild.id)  # also drops queued sounds
         # Called even when not connected, to clear a connection left half-open.
         await voice.leave(guild.id)
         await reply(interaction, "Left the voice channel." if was_connected else "I wasn't in one.")

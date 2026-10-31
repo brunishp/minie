@@ -22,6 +22,7 @@ build-backend = "uv_build"
 dev = [
     "pyright[nodejs]>=1.1.414",
     "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1",
     "ruff>=0.17.3",
 ]
 
@@ -35,6 +36,8 @@ select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.pyright]
 include = ["src", "tests"]

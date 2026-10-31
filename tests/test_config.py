@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from minie.config import ConfigError, Settings
+from minie.playback import Overlap
 
 
 def test_defaults() -> None:
@@ -31,6 +32,33 @@ def test_reads_the_environment() -> None:
     assert settings.voice_debug is True
 
 
+def test_sound_limits_and_playback_rules() -> None:
+    defaults = Settings.from_env({})
+    assert defaults.max_upload_bytes == 8 * 2**20
+    assert defaults.max_duration == 10
+    assert defaults.overlap is Overlap.INTERRUPT
+    assert defaults.cooldown == 3
+
+    settings = Settings.from_env(
+        {
+            "MINIE_MAX_UPLOAD_MB": "2.5",
+            "MINIE_MAX_DURATION_S": "4",
+            "MINIE_LOUDNESS_LUFS": "-23",
+            "MINIE_MAX_SOUNDS": "20",
+            "MINIE_COOLDOWN_S": "0",
+            "MINIE_OVERLAP": "Queue",
+            "MINIE_QUEUE_MAX": "3",
+        }
+    )
+    assert settings.max_upload_bytes == round(2.5 * 2**20)
+    assert settings.max_duration == 4
+    assert settings.loudness_lufs == -23
+    assert settings.max_sounds == 20
+    assert settings.cooldown == 0
+    assert settings.overlap is Overlap.QUEUE
+    assert settings.queue_max == 3
+
+
 @pytest.mark.parametrize(
     ("key", "value"),
     [
@@ -38,6 +66,10 @@ def test_reads_the_environment() -> None:
         ("MINIE_DEV_GUILD_ID", "-5"),
         ("MINIE_VOICE_DEBUG", "maybe"),
         ("MINIE_LOG_LEVEL", "LOUD"),
+        ("MINIE_MAX_DURATION_S", "ten"),
+        ("MINIE_LOUDNESS_LUFS", "0"),
+        ("MINIE_QUEUE_MAX", "2.5"),
+        ("MINIE_OVERLAP", "shuffle"),
     ],
 )
 def test_rejects_malformed_values(key: str, value: str) -> None:

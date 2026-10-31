@@ -3,6 +3,7 @@
 import discord
 
 from minie.errors import UserError
+from minie.voice.base import VoicePlayer
 
 
 async def reply(interaction: discord.Interaction, message: str) -> None:
@@ -18,6 +19,16 @@ def invoking_member(interaction: discord.Interaction) -> tuple[discord.Guild, di
     if guild is None or not isinstance(member, discord.Member):
         raise UserError("This command only works in a server.")
     return guild, member
+
+
+def require_listener(voice: VoicePlayer, guild_id: int, member: discord.Member) -> None:
+    """Only someone in the bot's voice channel may make it play (or stop) sounds there."""
+    channel_id = voice.connected_channel_id(guild_id)
+    if channel_id is None:
+        raise UserError("I'm not in a voice channel, use /join first.")
+    state = member.voice
+    if state is None or state.channel is None or state.channel.id != channel_id:
+        raise UserError(f"Join <#{channel_id}> first.")
 
 
 def voice_channel_of(member: discord.Member) -> discord.VoiceChannel:

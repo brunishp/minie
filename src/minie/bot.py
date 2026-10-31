@@ -11,6 +11,9 @@ from minie.commands import voice as voice_commands
 from minie.commands.common import reply
 from minie.config import Settings
 from minie.errors import UserError
+from minie.library import SoundLibrary
+from minie.playback import PlaybackService
+from minie.store import SoundStore
 from minie.voice.base import VoicePlayer
 from minie.voice.discordpy import DiscordPyVoicePlayer
 
@@ -26,22 +29,41 @@ class MinieBot(discord.Client):
         intents = discord.Intents.none()
         intents.guilds = True
         intents.voice_states = True
-        super().__init__(intents=intents)
+        # Replies may echo what users typed; the bot never pings anyone.
+        super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
 
         self.settings = settings
         self.test_tone = settings.data_dir / TEST_TONE_FILE
         self.voice: VoicePlayer = DiscordPyVoicePlayer(self)
+        self.store = SoundStore(settings.data_dir / "minie.db")
+        self.library = SoundLibrary(self.store, settings)
+        self.playback = PlaybackService(
+            self.voice,
+            overlap=settings.overlap,
+            queue_max=settings.queue_max,
+            cooldown=settings.cooldown,
+        )
         self.tree = app_commands.CommandTree(
             self,
             allowed_contexts=app_commands.AppCommandContext(guild=True),
             allowed_installs=app_commands.AppInstallationType(guild=True),
         )
         self.tree.error(_on_command_error)
-        voice_commands.register(self.tree, self.voice)
-        sounds.register(self.tree, self.voice, test_tone=self.test_tone)
+        voice_commands.register(self.tree, self.voice, self.playback)
+        sounds.register(
+            self.tree,
+            voice=self.voice,
+            playback=self.playback,
+            library=self.library,
+            test_tone=self.test_tone,
+        )
 
     async def on_ready(self) -> None:
         _log.info("Connected as %s, in %d guild(s)", self.user, len(self.guilds))
+
+    async def close(self) -> None:
+        await super().close()
+        self.store.close()
 
 
 async def sync_commands(
