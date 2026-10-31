@@ -1,0 +1,87 @@
+"""The Discord client: gateway session, slash command tree and the services behind it."""
+
+import logging
+from collections.abc import Sequence
+
+import discord
+from discord import app_commands
+
+from minie.commands import sounds
+from minie.commands import voice as voice_commands
+from minie.commands.common import reply
+from minie.config import Settings
+from minie.errors import UserError
+from minie.voice.base import VoicePlayer
+from minie.voice.discordpy import DiscordPyVoicePlayer
+
+_log = logging.getLogger(__name__)
+
+TEST_TONE_FILE = "builtin/test-tone.ogg"
+
+
+class MinieBot(discord.Client):
+    def __init__(self, settings: Settings) -> None:
+        # Least privilege: the guild and channel cache plus voice states are all the bot
+        # reads. Neither intent is privileged, and slash commands need no message content.
+        intents = discord.Intents.none()
+        intents.guilds = True
+        intents.voice_states = True
+        super().__init__(intents=intents)
+
+        self.settings = settings
+        self.test_tone = settings.data_dir / TEST_TONE_FILE
+        self.voice: VoicePlayer = DiscordPyVoicePlayer(self)
+        self.tree = app_commands.CommandTree(
+            self,
+            allowed_contexts=app_commands.AppCommandContext(guild=True),
+            allowed_installs=app_commands.AppInstallationType(guild=True),
+        )
+        self.tree.error(_on_command_error)
+        voice_commands.register(self.tree, self.voice)
+        sounds.register(self.tree, self.voice, test_tone=self.test_tone)
+
+    async def on_ready(self) -> None:
+        _log.info("Connected as %s, in %d guild(s)", self.user, len(self.guilds))
+
+
+async def sync_commands(
+    tree: app_commands.CommandTree, *, guild_id: int | None, clear: bool = False
+) -> None:
+    if guild_id is None:
+        synced = await tree.sync()
+        _log.info(
+            "Registered %d global command(s): %s. Clients can take a while to show them.",
+            len(synced),
+            _names(synced),
+        )
+        return
+
+    guild = discord.Object(id=guild_id)
+    if clear:
+        tree.clear_commands(guild=guild)
+    else:
+        # Guild commands update instantly, unlike global ones: the setup for development.
+        tree.copy_global_to(guild=guild)
+    synced = await tree.sync(guild=guild)
+    _log.info("Registered %d command(s) in guild %s: %s", len(synced), guild_id, _names(synced))
+
+
+def _names(commands: Sequence[app_commands.AppCommand]) -> str:
+    return ", ".join(f"/{command.name}" for command in commands) or "none"
+
+
+async def _on_command_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    cause = error.original if isinstance(error, app_commands.CommandInvokeError) else error
+    if isinstance(cause, UserError | app_commands.CheckFailure):
+        message = str(cause)
+    else:
+        command = interaction.command.qualified_name if interaction.command else "?"
+        _log.error("/%s failed", command, exc_info=cause)
+        message = "Something went wrong, the error has been logged."
+    try:
+        await reply(interaction, message)
+    except discord.HTTPException:
+        # Usually the interaction expired: 3 s to answer, 15 min for follow-ups.
+        _log.warning("Could not report an error to the user", exc_info=True)
