@@ -6,11 +6,10 @@ from collections.abc import Sequence
 import discord
 from discord import app_commands
 
-from minie.commands import sounds
+from minie.commands import panel, sounds
 from minie.commands import voice as voice_commands
-from minie.commands.common import reply
+from minie.commands.common import report_error
 from minie.config import Settings
-from minie.errors import UserError
 from minie.library import SoundLibrary
 from minie.playback import PlaybackService
 from minie.store import SoundStore
@@ -49,14 +48,22 @@ class MinieBot(discord.Client):
             allowed_installs=app_commands.AppInstallationType(guild=True),
         )
         self.tree.error(_on_command_error)
+        # Read by the panel's buttons through `interaction.client.panels`.
+        self.panels = panel.Panels(voice=self.voice, playback=self.playback, library=self.library)
         voice_commands.register(self.tree, self.voice, self.playback)
         sounds.register(
             self.tree,
             voice=self.voice,
             playback=self.playback,
             library=self.library,
+            panels=self.panels,
             test_tone=self.test_tone,
         )
+        panel.register(self.tree, self.panels)
+
+    async def setup_hook(self) -> None:
+        # Lets panels opened before a restart keep working.
+        self.add_dynamic_items(*panel.BUTTONS)
 
     async def on_ready(self) -> None:
         _log.info("Connected as %s, in %d guild(s)", self.user, len(self.guilds))
@@ -95,15 +102,5 @@ def _names(commands: Sequence[app_commands.AppCommand]) -> str:
 async def _on_command_error(
     interaction: discord.Interaction, error: app_commands.AppCommandError
 ) -> None:
-    cause = error.original if isinstance(error, app_commands.CommandInvokeError) else error
-    if isinstance(cause, UserError | app_commands.CheckFailure):
-        message = str(cause)
-    else:
-        command = interaction.command.qualified_name if interaction.command else "?"
-        _log.error("/%s failed", command, exc_info=cause)
-        message = "Something went wrong, the error has been logged."
-    try:
-        await reply(interaction, message)
-    except discord.HTTPException:
-        # Usually the interaction expired: 3 s to answer, 15 min for follow-ups.
-        _log.warning("Could not report an error to the user", exc_info=True)
+    command = interaction.command.qualified_name if interaction.command else "?"
+    await report_error(interaction, error, source=f"/{command}")

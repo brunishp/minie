@@ -32,12 +32,25 @@ description change. The bot deliberately doesn't sync at startup.
 - **20 ms Opus frames.** Every sound is Ogg/Opus, 48 kHz stereo, `FRAME_DURATION_MS = 20`
   (`audio.OPUS_OUTPUT_ARGS`). `voice/ogg.read_opus_frames` refuses anything else: senders emit
   one packet per 20 ms tick. Playback never transcodes.
+- **Where the bot goes.** Only `PlaybackService` (`join`, `play`) connects or moves the bot,
+  under its per-guild lock, and never away from a channel where it plays or has a queue.
+  Commands check permissions first with `commands.common.target_channel`, and defer when it
+  says a connection is needed.
 - **Rules outside the commands.** Upload rules live in `library.py`, playback rules (cooldown,
   interrupt or queue) in `playback.py`, so the planned web UI reuses them. Commands stay thin.
 - **Command errors.** Raise `UserError` (`errors.py`) for anything the user should read;
   `bot._on_command_error` shows it, and logs every other exception with a generic reply. Reply
   with `commands.common.reply` (ephemeral, works before or after deferring). Defer anything
   that can exceed Discord's 3 s deadline (voice connects, uploads).
+- **Panel buttons** (`commands/panel.py`) are `DynamicItem`s whose state lives in the
+  `custom_id` (`minie:<action>:…`, at most 100 characters, unique within a message), so they
+  survive restarts. New button classes go in `panel.BUTTONS`, which `bot.setup_hook`
+  registers. discord.py only logs exceptions from their callbacks, so they go through
+  `_handle`, which calls `commands.common.report_error`. Build a new `View` for every draw
+  (`panel.render`).
+- **Ephemeral panels** can only be edited through an interaction token valid 15 minutes.
+  `PanelRegistry` keeps those interactions in memory only: they're credentials, never to be
+  stored or logged.
 - **Uploads are hostile input to FFmpeg.** Every ffprobe or ffmpeg call that reads an upload
   passes `audio._INPUT_RESTRICTIONS` (demuxer allowlist, `file` protocol only) and forces the
   probed demuxer with `-f`. Check durations on decoded output, not on container metadata.
@@ -69,11 +82,20 @@ description change. The bot deliberately doesn't sync at startup.
   above the voice seam.
 - `tests/test_voice_discordpy.py` runs the discord.py adapter against discord.py's real sender
   thread with a fake connection.
+- `tests/test_panel.py` checks panel layouts and button ID round-trips, and fakes the few
+  `Interaction` members `PanelRegistry` uses.
 - FFmpeg tests generate their inputs with lavfi sources and skip when ffmpeg is missing.
 - pytest-asyncio runs in auto mode: `async def test_…` needs no marker.
 
 ## Roadmap (don't implement unasked, but don't block)
 
+- Next, chores and helpers:
+  - `/rename <sound> <new name>`: same name rules and permission as `/remove`, open panels
+    updated.
+  - `/info <sound>`: uploader, date, length.
+  - Startup clean-up of `data/tmp/` and of sound files the database no longer lists.
+  - Idea: leaving after some minutes alone in a channel. It would bring back join sounds, so
+    weigh that first.
 - Deployment: a systemd unit and update script for the Proxmox LXC container, on the
   `deploy-service` branch until the maintainer decides to run the bot as a service.
 - V2: FastAPI web UI with a button grid, and a mixer for overlapping sounds (decode to PCM, sum

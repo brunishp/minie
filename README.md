@@ -91,15 +91,29 @@ uv run --env-file .env minie run
 
 | Command | What it does |
 |---|---|
-| `/join` | Joins your voice channel, self-deafened since it never listens |
+| `/join` | Joins your voice channel, self-deafened since it never listens. Rarely needed: playing a sound brings the bot along |
 | `/leave` | Leaves the voice channel and drops any queued sounds |
 | `/play [sound]` | Plays a sound, with autocomplete on the server's sounds. Without a name, plays a one-second test tone |
 | `/stop` | Stops the current sound and clears the queue |
 | `/add <name> <file>` | Adds a sound from an attached audio file: MP3, WAV, Ogg, FLAC, M4A or WebM |
 | `/list` | Lists the server's sounds with their lengths |
 | `/remove <sound>` | Removes a sound. Allowed for whoever added it, and for members with Manage Server |
+| `/panel` | Opens your own grid of sound buttons: 20 per page, with ◀ ▶ to page and ⏹ to stop |
 
-- `/play` and `/stop` only work for members in the bot's voice channel.
+- Playing a sound (`/play` or a panel button) from a voice channel brings the bot there if
+  it's in no voice channel, or idle in another one. It's never pulled away while it plays or
+  has sounds queued, by `/join` or anything else: the member is told where it's busy instead.
+  The cooldown and the interrupt or queue rule apply to clicks too.
+- `/stop` and the panel's ⏹ only work for members in the bot's voice channel.
+- Discord plays its join sound whenever the bot (or anyone) joins a channel. Each member's
+  app plays it, and no bot can turn it off. The bot stays connected once it has joined, so
+  the sound is rare. Members can turn it off for themselves under User Settings >
+  Notifications ("User Join" and "User Leave"), for everyone who joins.
+- A panel is private: only whoever opened it sees it, and each member pages on their own.
+  Clicking a sound shows nothing; only problems (cooldown, wrong channel) get a private message.
+  A panel follows `/add` and `/remove` as they happen, for about 15 minutes after its last
+  use (the limit Discord puts on editing it); after that it catches up on the next click. It
+  survives bot restarts, but not reloading Discord: run `/panel` again.
 - Sound names are 1 to 32 characters: letters, digits, `-` and `_`. Case is ignored.
 - Anyone can use `/add` by default. To restrict it to some roles, open Server Settings >
   Integrations and pick the bot. No code change is needed.

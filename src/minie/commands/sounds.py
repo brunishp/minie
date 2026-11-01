@@ -6,7 +6,8 @@ from pathlib import Path
 import discord
 from discord import app_commands
 
-from minie.commands.common import invoking_member, reply, require_listener
+from minie.commands.common import invoking_member, reply, require_listener, target_channel
+from minie.commands.panel import Panels
 from minie.errors import UserError
 from minie.library import NAME_RULES, SoundLibrary
 from minie.playback import PlaybackService
@@ -23,6 +24,7 @@ def register(
     voice: VoicePlayer,
     playback: PlaybackService,
     library: SoundLibrary,
+    panels: Panels,
     test_tone: Path,
 ) -> None:
     async def sound_choices(
@@ -40,7 +42,7 @@ def register(
     @app_commands.autocomplete(sound=sound_choices)
     async def play(interaction: discord.Interaction, sound: str | None = None) -> None:
         guild, member = invoking_member(interaction)
-        require_listener(voice, guild.id, member)
+        channel, must_connect = target_channel(voice, guild, member)
         if sound is None:
             label = "the test tone"
             frames = await asyncio.to_thread(read_opus_frames, test_tone)
@@ -48,7 +50,10 @@ def register(
             found = library.find(guild.id, sound)
             label = f"`{found.name}`"
             frames = await library.frames(found)
-        position = await playback.play(guild.id, member.id, frames)
+        if must_connect:
+            # Joining first can take longer than the 3 s Discord allows for an answer.
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        position = await playback.play(guild.id, member.id, channel.id, frames)
         await reply(
             interaction,
             f"Playing {label}." if position == 0 else f"Queued {label} (position {position}).",
@@ -74,6 +79,7 @@ def register(
         await interaction.response.defer(ephemeral=True, thinking=True)
         sound = await library.add(guild.id, member.id, sound_name, await file.read())
         await reply(interaction, f"Added `{sound.name}` ({_seconds(sound)}).")
+        await panels.refresh(guild.id)  # after replying: the uploader needn't wait for it
 
     @tree.command(name="list", description="List this server's sounds")
     async def list_sounds(interaction: discord.Interaction) -> None:
@@ -92,6 +98,7 @@ def register(
             )
         library.remove(found)
         await reply(interaction, f"Removed `{found.name}`.")
+        await panels.refresh(guild.id)
 
 
 def _seconds(sound: Sound) -> str:
