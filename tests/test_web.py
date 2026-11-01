@@ -4,7 +4,8 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
-from web_harness import ALICE, Harness, running
+from aiohttp import ClientResponse
+from web_harness import ALICE, BOB, ELSEWHERE, GUILD, HERE, HORN, Harness, running
 
 from minie.store import SoundStore
 from minie.web.auth import SESSION_LIFETIME, Sessions
@@ -135,3 +136,108 @@ async def test_the_access_log_leaves_out_query_strings(
     lines = [r.getMessage() for r in caplog.records if r.name == "minie.web.access"]
     assert lines and lines[0].startswith("GET /auth/callback 400")
     assert "secret-code" not in caplog.text
+
+
+# Bot control
+
+
+async def test_list_sounds_with_who_may_manage_them(web: Harness) -> None:
+    web.member(BOB)
+    web.sound("horn", uploader=ALICE)
+    web.sound("drum", uploader=BOB)
+    await web.sign_in(BOB, "Bob")
+    body = await (await web.client.get(f"/api/guilds/{GUILD}/sounds")).json()
+    assert [(s["name"], s["can_manage"]) for s in body["sounds"]] == [
+        ("drum", True),
+        ("horn", False),
+    ]
+    assert body["sounds"][0]["uploader_id"] == str(BOB)
+
+
+async def test_non_members_are_refused(web: Harness) -> None:
+    await web.sign_in(BOB, "Bob")  # signed in, but not in the server (any more)
+    response = await web.client.get(f"/api/guilds/{GUILD}/sounds")
+    assert response.status == 403
+    assert (await web.client.get("/api/guilds/not-a-number/sounds")).status == 404
+
+
+async def test_play_joins_the_members_channel(web: Harness) -> None:
+    web.member(ALICE, HERE)
+    web.sound("horn")
+    await web.sign_in()
+    response = await web.post(f"/api/guilds/{GUILD}/play", {"name": "horn"})
+    assert await response.json() == {"position": 0}
+    assert web.voice.joins == [HERE]
+    assert web.voice.started == [HORN]
+
+
+async def test_play_errors_name_channels_the_member_may_see(web: Harness) -> None:
+    web.member(ALICE, HERE)
+    web.sound("horn")
+    web.presence.names = {ELSEWHERE: "gaming"}
+    await web.sign_in()
+    web.voice.channel = ELSEWHERE
+    await web.playback.play(GUILD, BOB, ELSEWHERE, HORN)  # busy over there
+
+    busy = await web.post(f"/api/guilds/{GUILD}/play", {"name": "horn"})
+    assert busy.status == 409
+    assert (await busy.json())["error"].startswith("I'm busy in #gaming.")
+
+    web.presence.hidden_from.add((ALICE, ELSEWHERE))
+    hidden = await web.post(f"/api/guilds/{GUILD}/play", {"name": "horn"})
+    assert (await hidden.json())["error"].startswith("I'm busy in a channel you can't see.")
+
+
+async def test_play_validates_its_input(web: Harness) -> None:
+    web.member(ALICE, HERE)
+    await web.sign_in()
+    missing = await web.post(f"/api/guilds/{GUILD}/play", {"name": 3})
+    assert missing.status == 400
+    unknown = await web.post(f"/api/guilds/{GUILD}/play", {"name": "nothing"})
+    assert unknown.status == 404
+    web.member(ALICE, None)
+    not_in_voice = await web.post(f"/api/guilds/{GUILD}/play", {"name": "nothing"})
+    assert (await not_in_voice.json())["error"] == "Join a voice channel first."
+
+
+async def test_status_stop_and_leave(web: Harness) -> None:
+    web.member(ALICE, HERE)
+    web.sound("horn")
+    web.presence.names = {HERE: "lounge"}
+    await web.sign_in()
+    status = await (await web.client.get(f"/api/guilds/{GUILD}/status")).json()
+    assert status == {"channel": None, "playing": False, "queued": 0, "with_you": False}
+
+    await web.post(f"/api/guilds/{GUILD}/play", {"name": "horn"})
+    status = await (await web.client.get(f"/api/guilds/{GUILD}/status")).json()
+    assert status["channel"] == {"id": str(HERE), "name": "lounge"}
+    assert (status["playing"], status["with_you"]) == (True, True)
+
+    assert await (await web.post(f"/api/guilds/{GUILD}/stop")).json() == {"stopped": True}
+    assert await (await web.post(f"/api/guilds/{GUILD}/leave")).json() == {"left": True}
+    assert web.voice.channel is None
+
+
+async def test_events_follow_changes_from_any_source(web: Harness) -> None:
+    web.member(ALICE, HERE)
+    web.sound("horn")
+    await web.sign_in()
+    stream = await web.client.get(f"/api/guilds/{GUILD}/events")
+    assert stream.headers["Content-Type"] == "text/event-stream"
+    assert await stream.content.readline() == b"retry: 3000\n"
+    await stream.content.readline()
+
+    # Through Soundboard, as a slash command would.
+    web.soundboard.rename(web.member(ALICE), "horn", "drum")
+    assert await _next_event(stream) == "sounds"
+    await web.post(f"/api/guilds/{GUILD}/play", {"name": "drum"})
+    assert await _next_event(stream) == "status"
+    stream.close()
+
+
+async def _next_event(stream: ClientResponse) -> str:
+    async with asyncio.timeout(2):
+        while True:
+            line = (await stream.content.readline()).decode().strip()
+            if line.startswith("event: "):
+                return line.removeprefix("event: ")

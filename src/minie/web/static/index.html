@@ -10,11 +10,21 @@
 <body>
   <header>
     <h1>minie</h1>
+    <select id="guild" aria-label="Server" hidden></select>
     <span id="user"></span>
     <button id="sign-out" type="button" hidden>Sign out</button>
   </header>
-  <main id="main">
-    <p class="muted">Loading…</p>
+  <main>
+    <p id="message" class="muted">Loading…</p>
+    <section id="board" hidden>
+      <div id="status-bar">
+        <span id="status"></span>
+        <button id="stop" type="button">⏹ Stop</button>
+        <button id="leave" type="button">Leave</button>
+      </div>
+      <div id="toast" role="status" aria-live="polite"></div>
+      <div id="grid" class="grid"></div>
+    </section>
   </main>
 </body>
 </html>

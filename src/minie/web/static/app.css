@@ -69,3 +69,55 @@ button:disabled {
   opacity: 0.5;
   cursor: default;
 }
+
+header select {
+  font: inherit;
+  padding: 0.3rem;
+  border-radius: 6px;
+}
+
+#status-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+#status {
+  margin-right: auto;
+  color: var(--muted);
+}
+
+#stop {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+#toast {
+  min-height: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+#toast.error {
+  color: var(--danger);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 0.5rem;
+}
+
+button.sound {
+  padding: 0.9rem 0.5rem;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+button.sound:active {
+  transform: scale(0.97);
+}

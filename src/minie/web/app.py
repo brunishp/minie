@@ -26,7 +26,7 @@ from minie.web.auth import (
     same_state,
     set_cookie,
 )
-from minie.web.core import OAUTH, SERVICES, SESSIONS, SETTINGS, ApiError, Services
+from minie.web.core import OAUTH, SERVICES, SESSIONS, SETTINGS, STREAMS, ApiError, Services
 
 _log = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ def create_app(
     app[SERVICES] = services
     app[SETTINGS] = settings
     app[SESSIONS] = Sessions()
+    app[STREAMS] = set()
 
     async def http_client(app: web.Application) -> AsyncIterator[None]:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as http:
@@ -69,6 +70,7 @@ def create_app(
             yield
 
     app.cleanup_ctx.append(http_client)
+    app.on_shutdown.append(_close_streams)
     app.on_response_prepare.append(_add_security_headers)
     app.router.add_get("/", _index)
     app.router.add_get("/auth/login", _login)
@@ -94,6 +96,11 @@ def runner_options() -> dict[str, Any]:
         # Long-lived event streams are cancelled on shutdown; nothing else runs long.
         "shutdown_timeout": 5,
     }
+
+
+async def _close_streams(app: web.Application) -> None:
+    for task in list(app[STREAMS]):
+        task.cancel()
 
 
 class _AccessLogger(AbstractAccessLogger):

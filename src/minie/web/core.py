@@ -1,7 +1,9 @@
 """What every part of the web layer shares: the services it works with, app keys, errors."""
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from aiohttp import web
 
@@ -34,6 +36,8 @@ SERVICES = web.AppKey("services", Services)
 SETTINGS = web.AppKey("settings", Settings)
 SESSIONS = web.AppKey("sessions", Sessions)
 OAUTH = web.AppKey("oauth", DiscordOAuth)
+STREAMS: web.AppKey[set[asyncio.Task[Any]]] = web.AppKey("streams")
+"""The event streams being served, cancelled on shutdown so that it needn't wait for them."""
 
 
 class ApiError(Exception):

@@ -3,6 +3,7 @@
 Discord IDs are sent as strings: they exceed the 2^53 integers JavaScript numbers hold exactly.
 """
 
+import asyncio
 import re
 
 from aiohttp import web
@@ -12,9 +13,10 @@ from minie.errors import UserError
 from minie.library import SoundNotFound
 from minie.playback import BusyError
 from minie.store import GuildFullError, SoundExistsError
-from minie.web.core import SERVICES, session_of
+from minie.web.core import SERVICES, STREAMS, ApiError, session_of
 
 routes = web.RouteTableDef()
+HEARTBEAT = 20.0
 
 CALLER = web.RequestKey("caller", Caller)
 _CHANNEL_MENTION = re.compile(r"<#(\d+)>")
@@ -58,3 +60,126 @@ async def _readable(request: web.Request, message: str) -> str:
             )
         names[channel_id] = f"#{name}" if name else "a channel you can't see"
     return _CHANNEL_MENTION.sub(lambda match: names[match[1]], message)
+
+
+@routes.get("/api/guilds/{guild_id}/sounds")
+async def sounds(request: web.Request) -> web.Response:
+    caller = await _caller(request)
+    services = request.app[SERVICES]
+    return web.json_response(
+        {
+            "sounds": [
+                {
+                    "name": sound.name,
+                    "duration_ms": sound.duration_ms,
+                    "uploader_id": str(sound.uploader_id),
+                    "created_at": sound.created_at.isoformat(),
+                    "can_manage": services.soundboard.can_manage(caller, sound),
+                }
+                for sound in services.library.sounds(caller.guild_id)
+            ]
+        }
+    )
+
+
+@routes.get("/api/guilds/{guild_id}/status")
+async def status(request: web.Request) -> web.Response:
+    caller = await _caller(request)
+    services = request.app[SERVICES]
+    current = services.playback.status(caller.guild_id)
+    channel = None
+    if current.channel_id is not None:
+        name = await services.presence.visible_channel_name(caller, current.channel_id)
+        channel = {"id": str(current.channel_id), "name": name}
+    return web.json_response(
+        {
+            "channel": channel,
+            "playing": current.playing,
+            "queued": current.queued,
+            "with_you": current.channel_id is not None
+            and current.channel_id == caller.voice_channel_id,
+        }
+    )
+
+
+@routes.post("/api/guilds/{guild_id}/play")
+async def play(request: web.Request) -> web.Response:
+    caller = await _caller(request)
+    name = _text(await _body(request), "name")
+    soundboard = request.app[SERVICES].soundboard
+    # No hurry here, unlike an interaction: the request simply waits while the bot connects.
+    position = await soundboard.play(await soundboard.prepare(caller, name))
+    return web.json_response({"position": position})
+
+
+@routes.post("/api/guilds/{guild_id}/stop")
+async def stop(request: web.Request) -> web.Response:
+    caller = await _caller(request)
+    return web.json_response({"stopped": await request.app[SERVICES].soundboard.stop(caller)})
+
+
+@routes.post("/api/guilds/{guild_id}/leave")
+async def leave(request: web.Request) -> web.Response:
+    caller = await _caller(request)
+    return web.json_response({"left": await request.app[SERVICES].soundboard.leave(caller)})
+
+
+@routes.get("/api/guilds/{guild_id}/events")
+async def events(request: web.Request) -> web.StreamResponse:
+    """Server-sent events naming what changed; the page fetches the new state itself."""
+    caller = await _caller(request)
+    response = web.StreamResponse(
+        headers={"Content-Type": "text/event-stream", "X-Accel-Buffering": "no"}
+    )
+    await response.prepare(request)
+    task = asyncio.current_task()
+    assert task is not None
+    request.app[STREAMS].add(task)
+    try:
+        with request.app[SERVICES].events.subscribe(caller.guild_id) as subscription:
+            await response.write(b"retry: 3000\n\n")
+            while True:
+                try:
+                    async with asyncio.timeout(HEARTBEAT):
+                        changes = await subscription.next()
+                except TimeoutError:
+                    # Keeps proxies from closing an idle stream, and notices a gone client.
+                    await response.write(b": heartbeat\n\n")
+                    continue
+                for change in changes:
+                    # Browsers drop events whose data is empty, so the topic goes in both.
+                    message = f"event: {change.topic}\ndata: {change.topic}\n\n"
+                    await response.write(message.encode())
+    except ConnectionResetError:
+        pass
+    finally:
+        request.app[STREAMS].discard(task)
+    return response
+
+
+async def _caller(request: web.Request) -> Caller:
+    """The signed-in member, checked against Discord now rather than at sign-in."""
+    session = session_of(request)
+    raw = request.match_info["guild_id"]
+    if not raw.isdigit():
+        raise ApiError(404, "No such server.")
+    caller = await request.app[SERVICES].presence.caller(int(raw), session.user_id)
+    request[CALLER] = caller
+    return caller
+
+
+async def _body(request: web.Request) -> dict[str, object]:
+    try:
+        body = await request.json()
+    except ValueError:
+        raise ApiError(400, "The request body isn't valid JSON.") from None
+    if not isinstance(body, dict):
+        raise ApiError(400, "The request body must be a JSON object.")
+    return body
+
+
+def _text(body: dict[str, object], key: str) -> str:
+    value = body.get(key)
+    if not isinstance(value, str):
+        raise ApiError(400, f"`{key}` must be a string.")
+    return value
