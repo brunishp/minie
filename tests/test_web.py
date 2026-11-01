@@ -1,12 +1,24 @@
 import asyncio
 import logging
+import shutil
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
 from aiohttp import ClientResponse
-from web_harness import ALICE, BOB, ELSEWHERE, GUILD, HERE, HORN, Harness, running
+from web_harness import (
+    ALICE,
+    BOB,
+    ELSEWHERE,
+    GUILD,
+    HERE,
+    HORN,
+    UPLOAD_LIMIT,
+    Harness,
+    running,
+)
 
+from minie.audio import run_ffmpeg
 from minie.store import SoundStore
 from minie.web.auth import SESSION_LIFETIME, Sessions
 
@@ -241,3 +253,87 @@ async def _next_event(stream: ClientResponse) -> str:
             line = (await stream.content.readline()).decode().strip()
             if line.startswith("event: "):
                 return line.removeprefix("event: ")
+
+
+# Managing sounds
+
+
+@pytest.fixture
+def beep(tmp_path: Path) -> bytes:
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("needs ffmpeg")
+    path = tmp_path / "beep.wav"
+    run_ffmpeg(
+        "ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.5", "-ar", "8000", str(path)
+    )
+    return path.read_bytes()
+
+
+async def test_upload(web: Harness, beep: bytes) -> None:
+    web.member(ALICE)
+    await web.sign_in()
+    response = await web.upload("Beep", beep)
+    assert response.status == 200, await response.text()
+    assert (await response.json())["name"] == "beep"
+    assert [sound.name for sound in web.library.sounds(GUILD)] == ["beep"]
+    duplicate = await web.upload("beep", beep)
+    assert duplicate.status == 409
+
+
+async def test_upload_refusals(web: Harness) -> None:
+    web.member(ALICE)
+    await web.sign_in()
+    bad_name = await web.upload("../escape", b"x")
+    assert bad_name.status == 400
+    assert "1 to 32 characters" in (await bad_name.json())["error"]
+    too_big = await web.upload("big", b"x" * (UPLOAD_LIMIT + 1))
+    assert too_big.status == 413
+    announced_too_big = await web.upload("huge", b"x" * (UPLOAD_LIMIT + 100_000))
+    assert announced_too_big.status == 413
+    assert (await web.upload("beep", b"x", csrf_header=False)).status == 403
+    not_multipart = await web.post(f"/api/guilds/{GUILD}/sounds", {"name": "x"})
+    assert not_multipart.status == 400
+    assert web.library.sounds(GUILD) == []
+
+
+async def test_rename_and_remove(web: Harness) -> None:
+    web.member(ALICE)
+    web.member(BOB)
+    web.sound("horn", uploader=ALICE)
+    await web.sign_in(BOB, "Bob")
+    refused = await web.client.patch(
+        f"/api/guilds/{GUILD}/sounds/horn", json={"name": "mine"}, headers={"Origin": web.url}
+    )
+    assert refused.status == 403
+
+    await web.sign_in(ALICE, "Alice")
+    renamed = await web.client.patch(
+        f"/api/guilds/{GUILD}/sounds/horn", json={"name": "Air_Horn"}, headers={"Origin": web.url}
+    )
+    assert await renamed.json() == {"name": "air_horn"}
+    gone = await web.client.delete(
+        f"/api/guilds/{GUILD}/sounds/horn", json={}, headers={"Origin": web.url}
+    )
+    assert gone.status == 404
+    removed = await web.client.delete(
+        f"/api/guilds/{GUILD}/sounds/air_horn", json={}, headers={"Origin": web.url}
+    )
+    assert removed.status == 204
+    assert web.library.sounds(GUILD) == []
+
+
+async def test_commands_restricted_in_discord_are_refused(web: Harness) -> None:
+    web.member(ALICE)
+    web.sound("horn")
+    await web.sign_in()
+    web.presence.restricted = {"add"}
+    refused = await web.upload("beep", b"x")
+    assert refused.status == 403
+    assert "restricts /add" in (await refused.json())["error"]
+    played = await web.post(f"/api/guilds/{GUILD}/play", {"name": "horn"})
+    assert played.status == 200
+
+    web.presence.restricted = {"*"}  # the whole application
+    blocked = await web.post(f"/api/guilds/{GUILD}/play", {"name": "horn"})
+    assert blocked.status == 403
+    assert "restricts /play" in (await blocked.json())["error"]

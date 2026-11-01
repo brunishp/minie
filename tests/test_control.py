@@ -1,12 +1,21 @@
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
+import discord
 import pytest
-from fakes import STEREO_20MS, FakePresence, FakeVoice, write_opus
+from fakes import STEREO_20MS, Clock, FakePresence, FakeVoice, write_opus
 
 from minie.config import Settings
-from minie.control import Caller, Soundboard
+from minie.control import (
+    COMMAND_PERMISSIONS_TTL,
+    WHOLE_APP,
+    Caller,
+    DiscordPresence,
+    Soundboard,
+)
 from minie.errors import UserError
 from minie.events import Event, EventHub, Topic
 from minie.library import SoundLibrary, SoundNotFound
@@ -14,6 +23,7 @@ from minie.playback import Overlap, PlaybackService
 from minie.store import Sound, SoundStore
 
 GUILD = 1
+APP = 4242
 HERE, ELSEWHERE = 2, 3
 ALICE, BOB, ADMIN = 10, 11, 12
 TONE = [STEREO_20MS + b"tone"]
@@ -140,3 +150,47 @@ async def test_changes_are_published(world: World) -> None:
         assert await subscription.next() == [Event(GUILD, Topic.SOUNDS)]
         world.soundboard.remove(member(ALICE), "drum")
         assert await subscription.next() == [Event(GUILD, Topic.SOUNDS)]
+
+
+class FakeHttp:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.fail = False
+        self.permissions: list[dict[str, Any]] = []
+
+    async def get_global_commands(self, application_id: int) -> list[dict[str, Any]]:
+        return [{"id": "100", "name": "play"}, {"id": "101", "name": "add"}]
+
+    async def get_guild_commands(self, application_id: int, guild_id: int) -> list[dict[str, Any]]:
+        return [{"id": "200", "name": "remove"}]
+
+    async def get_guild_application_command_permissions(
+        self, application_id: int, guild_id: int
+    ) -> list[dict[str, Any]]:
+        self.calls += 1
+        if self.fail:
+            raise discord.HTTPException(cast(Any, SimpleNamespace(status=500, reason="")), "")
+        return self.permissions
+
+
+async def test_reads_command_restrictions_from_discord() -> None:
+    http = FakeHttp()
+    clock = Clock()
+    client = cast(discord.Client, SimpleNamespace(application_id=APP, http=http))
+    presence = DiscordPresence(client, clock=clock)
+    allow = [{"id": "1", "type": 1, "permission": True}]
+    http.permissions = [
+        {"id": "101", "permissions": allow},  # /add restricted
+        {"id": "100", "permissions": []},  # /play: an entry with nothing in it
+        {"id": "200", "permissions": allow},  # /remove, a guild copy
+    ]
+    assert await presence.restricted_commands(GUILD) == {"add", "remove"}
+
+    http.permissions = [{"id": str(APP), "permissions": allow}]
+    assert await presence.restricted_commands(GUILD) == {"add", "remove"}  # still cached
+    presence.forget_restrictions(GUILD)  # Discord announced a change
+    assert await presence.restricted_commands(GUILD) == {WHOLE_APP}
+    clock.now += COMMAND_PERMISSIONS_TTL
+    http.fail = True
+    with pytest.raises(UserError, match="couldn't check"):
+        await presence.restricted_commands(GUILD)

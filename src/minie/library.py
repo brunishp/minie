@@ -52,6 +52,10 @@ class SoundLibrary:
         self._tmp_dir = settings.data_dir / "tmp"
         self._conversions = asyncio.Semaphore(MAX_CONCURRENT_CONVERSIONS)
 
+    @property
+    def max_upload_bytes(self) -> int:
+        return self._settings.max_upload_bytes
+
     def find(self, guild_id: int, name: str) -> Sound:
         sound = self._store.get(guild_id, name.strip().lower())
         if sound is None:

@@ -24,9 +24,18 @@ from minie.voice.ogg import read_opus_frames
 # How long a member fetched over REST counts as current. Roles (hence permissions) can be up to
 # this old; members in voice are always current, from the gateway cache.
 MEMBER_TTL = 60.0
+# How long a server's slash command permissions count as current, unless Discord announces a
+# change first.
+COMMAND_PERMISSIONS_TTL = 60.0
+WHOLE_APP = "*"
+"""Stands for an overwrite on the whole application rather than one command."""
 
 
 class NotAMember(UserError):
+    pass
+
+
+class NotAllowed(UserError):
     pass
 
 
@@ -69,6 +78,11 @@ class Presence(Protocol):
         """The channel's name if `caller` may view the channel, else None."""
         ...
 
+    async def restricted_commands(self, guild_id: int) -> frozenset[str]:
+        """The slash commands the server restricts in Server Settings > Integrations, and
+        `WHOLE_APP` when it restricts the whole application."""
+        ...
+
 
 class DiscordPresence:
     """`Presence` answered from discord.py's caches, with REST for members not in voice."""
@@ -77,6 +91,7 @@ class DiscordPresence:
         self._client = client
         self._clock = clock
         self._fetched: dict[tuple[int, int], tuple[float, discord.Member | None]] = {}
+        self._restrictions: dict[int, tuple[float, frozenset[str]]] = {}
 
     def check_can_join(self, guild_id: int, channel_id: int) -> None:
         guild = self._client.get_guild(guild_id)
@@ -99,6 +114,46 @@ class DiscordPresence:
             return None
         # From 2026-11-16 the bot may know channels the member can't see: never name those.
         return channel.name if channel.permissions_for(member).view_channel else None
+
+    async def restricted_commands(self, guild_id: int) -> frozenset[str]:
+        now = self._clock()
+        cached = self._restrictions.get(guild_id)
+        if cached is None or now - cached[0] >= COMMAND_PERMISSIONS_TTL:
+            try:
+                cached = (now, await self._fetch_restrictions(guild_id))
+            except discord.HTTPException:
+                # Unknown means restricted: the web UI must never allow more than Discord.
+                raise UserError(
+                    "I couldn't check this server's command permissions, try again later."
+                ) from None
+            self._restrictions[guild_id] = cached
+        return cached[1]
+
+    def forget_restrictions(self, guild_id: int) -> None:
+        """Discord announced a change to the server's command permissions."""
+        self._restrictions.pop(guild_id, None)
+
+    async def _fetch_restrictions(self, guild_id: int) -> frozenset[str]:
+        application_id = self._client.application_id
+        if application_id is None:
+            raise UserError("I'm still starting up, try again in a moment.")
+        http = self._client.http
+        # Commands are global, or copied to the development server: name them from both.
+        commands = [
+            *await http.get_global_commands(application_id),
+            *await http.get_guild_commands(application_id, guild_id),
+        ]
+        names = {int(command["id"]): command["name"] for command in commands}
+        restricted: set[str] = set()
+        for entry in await http.get_guild_application_command_permissions(application_id, guild_id):
+            if not entry["permissions"]:
+                continue
+            target = int(entry["id"])
+            if target == application_id:
+                restricted.add(WHOLE_APP)
+            elif target in names:
+                restricted.add(names[target])
+        return frozenset(restricted)
 
     async def _member(self, guild_id: int, user_id: int) -> discord.Member | None:
         guild = self._client.get_guild(guild_id)
@@ -245,7 +300,7 @@ class Soundboard:
     def _managed(self, caller: Caller, name: str, action: str) -> Sound:
         sound = self._library.find(caller.guild_id, name)
         if not self.can_manage(caller, sound):
-            raise UserError(
+            raise NotAllowed(
                 f"Only whoever added a sound, or someone with Manage Server, can {action} it."
             )
         return sound

@@ -156,3 +156,76 @@ button.star {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+button.more {
+  position: absolute;
+  bottom: 0.15rem;
+  right: 0.15rem;
+  padding: 0 0.35rem;
+  border: none;
+  background: transparent;
+  color: var(--accent-fg);
+  line-height: 1.2;
+}
+
+#add-sound {
+  margin-top: 1.5rem;
+}
+
+#add-sound summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+#add-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+#add-form label,
+#manage label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+#add-form p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+input {
+  font: inherit;
+  padding: 0.35rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--fg);
+}
+
+dialog {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--fg);
+  min-width: 18rem;
+}
+
+dialog h2 {
+  margin-top: 0;
+  font-size: 1.1rem;
+}
+
+dialog .actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}

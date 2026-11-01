@@ -27,7 +27,27 @@
       </div>
       <div id="toast" role="status" aria-live="polite"></div>
       <div id="grid" class="grid"></div>
+      <details id="add-sound">
+        <summary>Add a sound</summary>
+        <form id="add-form">
+          <label>Name <input id="add-name" name="name" required maxlength="32" autocomplete="off"></label>
+          <label>File <input id="add-file" name="file" type="file" accept="audio/*,.ogg,.webm,.m4a,.flac" required></label>
+          <button type="submit">Add</button>
+          <p id="name-rules" class="muted"></p>
+        </form>
+      </details>
     </section>
   </main>
+  <dialog id="manage">
+    <form id="manage-form" method="dialog">
+      <h2 id="manage-title"></h2>
+      <label>New name <input id="manage-name" maxlength="32" autocomplete="off"></label>
+      <div class="actions">
+        <button id="manage-rename" type="button">Rename</button>
+        <button id="manage-remove" type="button" class="danger">Remove</button>
+        <button value="cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
 </body>
 </html>

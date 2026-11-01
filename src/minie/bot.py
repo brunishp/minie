@@ -97,6 +97,12 @@ class MinieBot(discord.Client):
         if self.user is not None and member.id == self.user.id:
             self.events.publish(member.guild.id, Topic.STATUS)
 
+    async def on_raw_app_command_permissions_update(
+        self, payload: discord.RawAppCommandPermissionsUpdateEvent
+    ) -> None:
+        # Someone changed Server Settings > Integrations: the web UI checks afresh.
+        self.presence.forget_restrictions(payload.guild.id)
+
     async def close(self) -> None:
         for task in self._background:
             task.cancel()

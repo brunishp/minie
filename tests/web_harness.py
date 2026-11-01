@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from aiohttp import ClientResponse, web
+from aiohttp import ClientResponse, FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 from fakes import STEREO_20MS, FakePresence, FakeVoice, write_opus
 
@@ -30,6 +30,7 @@ SECRET = "client-secret"
 ALICE, BOB = 10, 11
 HERE, ELSEWHERE = 2, 3
 HORN = [STEREO_20MS + b"horn"]
+UPLOAD_LIMIT = 32 * 1024
 
 
 @dataclass
@@ -87,7 +88,8 @@ class Harness:
         self.events = EventHub()
         self.voice = FakeVoice()
         self.presence = FakePresence()
-        self.library = SoundLibrary(store, Settings(data_dir=tmp_path), self.events)
+        library_settings = Settings(data_dir=tmp_path, max_upload_bytes=UPLOAD_LIMIT)
+        self.library = SoundLibrary(store, library_settings, self.events)
         self.playback = PlaybackService(
             self.voice, overlap=Overlap.INTERRUPT, queue_max=5, cooldown=0, events=self.events
         )
@@ -145,6 +147,15 @@ class Harness:
         return await self.client.post(
             path, json=json if json is not None else {}, headers={"Origin": self.url}, **kwargs
         )
+
+    async def upload(self, name: str, data: bytes, *, csrf_header: bool = True) -> ClientResponse:
+        form = FormData()
+        form.add_field("name", name)
+        form.add_field("file", data, filename="upload.bin", content_type="application/octet-stream")
+        headers = {"Origin": self.url}
+        if csrf_header:
+            headers["X-Minie"] = "1"
+        return await self.client.post(f"/api/guilds/{GUILD}/sounds", data=form, headers=headers)
 
 
 def free_port() -> int:

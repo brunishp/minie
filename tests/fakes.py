@@ -67,6 +67,8 @@ class FakePresence:
         self.names: dict[int, str] = {}
         self.hidden_from: set[tuple[int, int]] = set()
         """(user ID, channel ID) pairs where the member can't view the channel."""
+        self.restricted: set[str] = set()
+        """Slash commands restricted in Server Settings > Integrations."""
 
     def add(self, caller: Caller) -> Caller:
         self.members[(caller.guild_id, caller.user_id)] = caller
@@ -86,6 +88,9 @@ class FakePresence:
         if (caller.user_id, channel_id) in self.hidden_from:
             return None
         return self.names.get(channel_id)
+
+    async def restricted_commands(self, guild_id: int) -> frozenset[str]:
+        return frozenset(self.restricted)
 
 
 class Clock:

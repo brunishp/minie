@@ -6,6 +6,7 @@ const $ = (selector) => document.querySelector(selector);
 const state = {
   guildId: null,
   sounds: [],
+  maxUploadBytes: Infinity,
   status: null,
   events: null,
   favourites: new Set(),
@@ -33,12 +34,19 @@ const saved = {
 
 class SigningIn extends Error {}
 
-async function api(path, { method = "GET", body } = {}) {
-  const response = await fetch(path, {
-    method,
-    headers: body === undefined ? {} : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+async function api(path, { method = "GET", body, form } = {}) {
+  // Writes carry a JSON body, or the X-Minie header for uploads: both need a CORS preflight
+  // from another site, which the server never grants.
+  let headers = {};
+  let payload;
+  if (form !== undefined) {
+    headers = { "X-Minie": "1" };
+    payload = form;
+  } else if (body !== undefined) {
+    headers = { "Content-Type": "application/json" };
+    payload = JSON.stringify(body);
+  }
+  const response = await fetch(path, { method, headers, body: payload });
   if (response.status === 401) {
     // Not signed in, or the bot restarted: Discord signs us back in without a prompt.
     location.assign("/auth/login");
@@ -110,7 +118,7 @@ function renderGrid() {
   const grid = $("#grid");
   grid.replaceChildren();
   if (state.sounds.length === 0) {
-    grid.textContent = "No sounds yet. Add one with /add.";
+    grid.textContent = "No sounds yet. Add one below, or with /add in Discord.";
     return;
   }
   for (const sound of ordered()) {
@@ -135,7 +143,77 @@ function renderGrid() {
     star.addEventListener("click", () => toggleFavourite(sound.name));
 
     tile.append(play, star);
+    if (sound.can_manage) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "more";
+      more.textContent = "⋯";
+      more.setAttribute("aria-label", `Rename or remove ${sound.name}`);
+      more.addEventListener("click", () => openManage(sound.name));
+      tile.append(more);
+    }
     grid.append(tile);
+  }
+}
+
+function openManage(name) {
+  const dialog = $("#manage");
+  dialog.dataset.sound = name;
+  $("#manage-title").textContent = name;
+  $("#manage-name").value = name;
+  dialog.showModal();
+}
+
+async function renameSound() {
+  const dialog = $("#manage");
+  const name = dialog.dataset.sound;
+  const newName = $("#manage-name").value;
+  await attempt(async () => {
+    const answer = await api(guildPath(`/sounds/${encodeURIComponent(name)}`), {
+      method: "PATCH",
+      body: { name: newName },
+    });
+    if (state.favourites.delete(name)) toggleFavourite(answer.name);
+    dialog.close();
+    toast(`Renamed ${name} to ${answer.name}.`);
+  });
+}
+
+async function removeSound() {
+  const dialog = $("#manage");
+  const name = dialog.dataset.sound;
+  if (!confirm(`Remove ${name} for everyone on this server?`)) return;
+  await attempt(async () => {
+    await api(guildPath(`/sounds/${encodeURIComponent(name)}`), { method: "DELETE", body: {} });
+    dialog.close();
+    toast(`Removed ${name}.`);
+  });
+}
+
+async function addSound(event) {
+  event.preventDefault();
+  const name = $("#add-name").value;
+  const file = $("#add-file").files[0];
+  if (!file) return;
+  if (file.size > state.maxUploadBytes) {
+    toast(`That file is over the ${(state.maxUploadBytes / 2 ** 20).toFixed(0)} MiB limit.`, { error: true });
+    return;
+  }
+  const button = $("#add-form button[type=submit]");
+  button.disabled = true;
+  toast(`Adding ${name}…`);
+  // The name goes first, so the server checks it before receiving the file.
+  const form = new FormData();
+  form.append("name", name);
+  form.append("file", file);
+  try {
+    await attempt(async () => {
+      const sound = await api(guildPath("/sounds"), { method: "POST", form });
+      toast(`Added ${sound.name} (${(sound.duration_ms / 1000).toFixed(1)} s).`);
+      $("#add-form").reset();
+    });
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -263,7 +341,10 @@ function renderStatus() {
 }
 
 async function loadSounds() {
-  state.sounds = (await api(guildPath("/sounds"))).sounds;
+  const answer = await api(guildPath("/sounds"));
+  state.sounds = answer.sounds;
+  state.maxUploadBytes = answer.max_upload_bytes;
+  $("#name-rules").textContent = `Names: ${answer.name_rules}. Up to ${(answer.max_upload_bytes / 2 ** 20).toFixed(0)} MiB.`;
   renderGrid();
   mediaKeys.refresh();
 }
@@ -324,6 +405,9 @@ async function main() {
 
   $("#stop").addEventListener("click", () => attempt(() => api(guildPath("/stop"), { method: "POST", body: {} })));
   $("#leave").addEventListener("click", () => attempt(() => api(guildPath("/leave"), { method: "POST", body: {} })));
+  $("#add-form").addEventListener("submit", addSound);
+  $("#manage-rename").addEventListener("click", renameSound);
+  $("#manage-remove").addEventListener("click", removeSound);
   $("#media-keys").addEventListener("click", () =>
     attempt(() => (mediaKeys.enabled ? mediaKeys.disable() : mediaKeys.enable())),
   );
