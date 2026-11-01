@@ -57,15 +57,30 @@ description change. The bot deliberately doesn't sync at startup.
 - **Ephemeral panels** can only be edited through an interaction token valid 15 minutes.
   `PanelRegistry` keeps those interactions in memory only: they're credentials, never to be
   stored or logged.
+- **Web UI** (`web/`, aiohttp in the bot's process and event loop; off unless
+  `MINIE_WEB_PORT` is set):
+  - Every action goes through `Soundboard`, after `api._caller` checks membership against
+    Discord (never trust the guild list from sign-in), and `api._check_command`, which refuses
+    any action whose slash command a server restricts in Integrations. The web UI must never
+    allow more than Discord would.
+  - Sessions and OAuth tokens are credentials: memory only, never logged. The access token is
+    revoked right after sign-in. The access log prints paths without query strings.
+  - Writes need `Origin` equal to `MINIE_WEB_PUBLIC_URL`, and a JSON body or the `X-Minie`
+    header; never add CORS. Other host names are redirected or refused (DNS rebinding).
+  - Discord IDs go out as strings (JavaScript loses precision above 2^53). Error messages pass
+    through `api._readable`, which names only channels the member can view.
+  - The page is plain ES modules with no build step. CSP forbids inline script; put text in
+    with `textContent`, never `innerHTML`.
 - **Uploads are hostile input to FFmpeg.** Every ffprobe or ffmpeg call that reads an upload
   passes `audio._INPUT_RESTRICTIONS` (demuxer allowlist, `file` protocol only) and forces the
   probed demuxer with `-f`. Check durations on decoded output, not on container metadata.
   Conversions are bounded: timeout, `-t`, `MAX_CONCURRENT_CONVERSIONS`.
-- **Secrets.** The token comes only from the environment (`.env` is git-ignored). Never log
-  tokens or voice keys; `log.RedactSecrets` masks discord.py's gateway dumps. Keep `repr=False`
-  on secret settings.
+- **Secrets.** The token and the OAuth client secret come only from the environment (`.env` is
+  git-ignored). Never log tokens or voice keys; `log.RedactSecrets` masks discord.py's gateway
+  dumps. Keep `repr=False` on secret settings.
 - **Least privilege.** Intents are `Intents.none()` plus `guilds` and `voice_states`. Invite
   permissions are View Channel, Connect and Speak. No privileged intents, no message content.
+  Web sign-in asks only for the `identify` and `guilds` scopes.
 - **Storage.** Schema changes append a migration to `store._MIGRATIONS`; never edit an existing
   one. Uniqueness and limits are enforced in SQL, not just checked beforehand. Files are
   written to a temporary name, then renamed, and named after the sound's ID, never its name.
@@ -93,6 +108,8 @@ description change. The bot deliberately doesn't sync at startup.
   thread with a fake connection.
 - `tests/test_panel.py` checks panel layouts and button ID round-trips, and fakes the few
   `Interaction` members `PanelRegistry` uses.
+- `tests/web_harness.py` runs the web UI on the fakes, against `FakeDiscord`, a fake OAuth2
+  server; `Harness.sign_in` goes through the real sign-in flow.
 - FFmpeg tests generate their inputs with lavfi sources and skip when ffmpeg is missing.
 - pytest-asyncio runs in auto mode: `async def test_…` needs no marker.
 
@@ -102,9 +119,19 @@ description change. The bot deliberately doesn't sync at startup.
   weigh that first.
 - Deployment: a systemd unit and update script for the Proxmox LXC container, on the
   `deploy-service` branch until the maintainer decides to run the bot as a service.
-- V2: FastAPI web UI with a button grid, and a mixer for overlapping sounds (decode to PCM, sum
-  with clipping handling, re-encode 20 ms Opus frames). The mixer outputs `OpusFrames` like any
-  other source.
+- Web UI, next steps:
+  - Play on this device: a second `target` in `static/app.js`. Serve the Ogg/Opus file at
+    `GET …/sounds/{id}/audio` (immutable: IDs are random and files never change), decode with
+    Web Audio, and pick the output device with `setSinkId()` (Chrome, Edge, Firefox 116+,
+    Safari 18.4+). No cooldown or queue: those protect the shared voice channel. Users route
+    that output into games themselves (VB-CABLE, BlackHole, PipeWire). Safari's Ogg/Opus
+    support is unreliable; a WebM copy (`-c copy`, no re-encoding) at upload would cover it.
+  - Reach from other devices: HTTPS in front (Tailscale, Cloudflare Tunnel), with
+    `MINIE_WEB_PUBLIC_URL` set; cookies become `Secure` automatically.
+  - A finer reading of Integrations overwrites (roles, users, channels) if refusing outright
+    gets in the way.
+- Mixer for overlapping sounds (decode to PCM, sum with clipping handling, re-encode 20 ms Opus
+  frames). It outputs `OpusFrames` like any other source.
 - Protocol track: observe the voice and DAVE negotiation (`MINIE_VOICE_DEBUG=1`), then
   reimplement the transport (voice WebSocket, UDP IP discovery, RTP/Opus, AEAD with AES-256-GCM
   or XChaCha20-Poly1305) as a new `VoicePlayer`, with DAVE through davey or dave.py.

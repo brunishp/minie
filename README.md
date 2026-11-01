@@ -136,9 +136,69 @@ All optional, in `.env`:
 | `MINIE_OVERLAP` | `interrupt` | When a sound is already playing: `interrupt` cuts it off, `queue` plays the new one afterwards |
 | `MINIE_QUEUE_MAX` | `5` | Sounds that can wait in `queue` mode |
 | `MINIE_DATA_DIR` | `data` | Where the database and sounds are stored |
+| `MINIE_WEB_PORT` | unset | Turns the web UI on, on this port |
+| `MINIE_WEB_HOST` | `127.0.0.1` | Address the web UI listens on |
+| `MINIE_WEB_PUBLIC_URL` | `http://localhost:<port>` | Address browsers use, and base of the sign-in redirect |
+| `MINIE_OAUTH_CLIENT_SECRET` | unset | Required with the web UI (see below); a secret like the token |
 
 `interrupt` is the default because it feels immediate, and spamming `/play` can't build up a
 backlog of sounds.
+
+## Web UI
+
+An optional page to control the bot from a browser: sign in with Discord, pick a server, then
+play, stop and manage sounds, with live updates. It runs inside the bot; nothing else to start.
+
+### Turning it on
+
+1. Developer Portal › your application › **OAuth2**:
+   - under **Redirects**, add `http://localhost:8080/auth/callback`;
+   - **Reset Secret** and copy the client secret.
+2. In `.env`:
+
+   ```
+   MINIE_WEB_PORT=8080
+   MINIE_OAUTH_CLIENT_SECRET=<the client secret>
+   ```
+
+3. Restart the bot and open http://localhost:8080. Use exactly the public URL
+   (`MINIE_WEB_PUBLIC_URL`): other host names, `127.0.0.1` included, are sent there.
+
+The first visit asks for Discord's consent (your identity and server list). Later visits, and
+visits after a restart of the bot, sign you in again without asking.
+
+### What it does
+
+- Every action follows the same rules as the slash commands: playing brings the bot to your
+  voice channel unless it's busy elsewhere, the cooldown applies, ⏹ Stop needs you in the bot's
+  channel, and only the uploader (or Manage Server) can rename or remove a sound.
+- If a server restricts a command in Server Settings › Integrations, the web UI refuses the
+  matching action (`/play`, `/stop`, `/leave`, `/add`, `/rename`, `/remove`) for everyone,
+  and points to the slash command, which Discord checks properly.
+- ☆ marks a favourite, remembered in that browser. Favourites come first in the grid.
+- **Media keys** let you play sounds while a game has focus. Click **Media keys: off** once to
+  turn them on, then:
+  - play/pause plays the armed sound (shown on the page, and in the system's Now Playing
+    overlay);
+  - next and previous move through your favourites (all sounds when none is starred);
+  - stop stops the bot.
+
+  The keys go to whichever app played media last: start Spotify and it takes them back; click
+  the button again to take them back. They work in Chrome, Edge, Firefox and Safari on the
+  desktop.
+
+### Security
+
+- It listens on 127.0.0.1 only: nothing outside this machine reaches it. Opening it to other
+  devices needs HTTPS in front (Tailscale, a Cloudflare Tunnel); don't set `MINIE_WEB_HOST` to
+  a public address with plain HTTP.
+- Discord's access token is used once, to learn who you are and your servers, then revoked.
+  Sessions are kept in memory for 7 days, in an HttpOnly cookie; a restart ends them.
+- Membership is checked against Discord on every request, so leaving a server ends access to it
+  at once. Channels you can't view are never named.
+- Writes need the page's own origin and a JSON body (or a custom header for uploads), so other
+  sites can't act on your behalf. The access log never records query strings, where the
+  sign-in code travels.
 
 ## How uploads are processed
 
@@ -180,7 +240,8 @@ boundary for that.
 Same steps on Debian or Ubuntu: install the apt packages and uv, clone the repository, then
 `uv sync --frozen --no-dev`. Keep `.env` readable by the bot's user only (`chmod 600 .env`). No
 inbound ports are needed, even behind NAT: the gateway is an outgoing WebSocket, and voice is
-outgoing UDP, where IP discovery learns the NAT's public address.
+outgoing UDP, where IP discovery learns the NAT's public address. The web UI is the exception:
+leave it off there until it can sit behind HTTPS.
 
 ## Development
 
@@ -210,6 +271,7 @@ src/minie/
 ├── store.py                    # SQLite metadata, with numbered schema migrations
 ├── audio.py                    # FFmpeg: probe, loudness, encode once to Ogg/Opus (20 ms frames)
 ├── playback.py                 # cooldown, then interrupt or queue, above VoicePlayer
+├── web/                        # web UI (aiohttp): sign-in, JSON API, live events, static page
 └── voice/
     ├── base.py                 # VoicePlayer: the interface the rest of the bot uses
     ├── discordpy.py            # VoicePlayer implemented with discord.py
