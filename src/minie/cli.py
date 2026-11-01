@@ -84,6 +84,11 @@ def _run(settings: Settings) -> int:
     except audio.AudioError as exc:
         _log.error("Could not create the test sound: %s", exc)
         return 1
+    try:
+        bot.library.clean_up()
+    except OSError:
+        # Leftover files waste space but break nothing: not a reason to stay offline.
+        _log.warning("Could not clean up the data directory", exc_info=True)
 
     try:
         asyncio.run(_serve(bot, token))

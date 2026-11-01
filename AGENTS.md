@@ -62,7 +62,9 @@ description change. The bot deliberately doesn't sync at startup.
   permissions are View Channel, Connect and Speak. No privileged intents, no message content.
 - **Storage.** Schema changes append a migration to `store._MIGRATIONS`; never edit an existing
   one. Uniqueness and limits are enforced in SQL, not just checked beforehand. Files are
-  written to a temporary name, then renamed.
+  written to a temporary name, then renamed, and named after the sound's ID, never its name.
+  `SoundLibrary.clean_up` runs at startup and deletes unlisted files, so the bot must be the
+  only process writing to the data directory: a V2 web UI uploads through it, not beside it.
 - **No blocking in coroutines.** Ruff's ASYNC rules are on. Use `asyncio.create_subprocess_exec`
   and `asyncio.to_thread`. Small SQLite queries on the loop thread are the one deliberate
   exception (see `store.py`).
@@ -89,13 +91,8 @@ description change. The bot deliberately doesn't sync at startup.
 
 ## Roadmap (don't implement unasked, but don't block)
 
-- Next, chores and helpers:
-  - `/rename <sound> <new name>`: same name rules and permission as `/remove`, open panels
-    updated.
-  - `/info <sound>`: uploader, date, length.
-  - Startup clean-up of `data/tmp/` and of sound files the database no longer lists.
-  - Idea: leaving after some minutes alone in a channel. It would bring back join sounds, so
-    weigh that first.
+- Idea: leaving after some minutes alone in a channel. It would bring back join sounds, so
+  weigh that first.
 - Deployment: a systemd unit and update script for the Proxmox LXC container, on the
   `deploy-service` branch until the maintainer decides to run the bot as a service.
 - V2: FastAPI web UI with a button grid, and a mixer for overlapping sounds (decode to PCM, sum

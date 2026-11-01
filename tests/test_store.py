@@ -59,10 +59,27 @@ def test_enforces_the_per_guild_limit(store: SoundStore) -> None:
     store.add(sound("c", guild_id=2), max_per_guild=2)
 
 
+def test_rename_keeps_names_unique(store: SoundStore) -> None:
+    store.add(sound("a"), max_per_guild=10)
+    store.add(sound("b"), max_per_guild=10)
+    store.add(sound("c", guild_id=2), max_per_guild=10)
+    assert store.rename("id-1-a", "c") is True  # "c" is only taken in another guild
+    assert [s.name for s in store.sounds(1)] == ["b", "c"]
+    with pytest.raises(SoundExistsError):
+        store.rename("id-1-b", "c")
+    assert store.rename("no-such-id", "d") is False
+
+
 def test_remove(store: SoundStore) -> None:
     store.add(sound("a"), max_per_guild=10)
     store.remove("id-1-a")
     assert store.get(1, "a") is None
+
+
+def test_all_sounds_spans_guilds(store: SoundStore) -> None:
+    store.add(sound("b", guild_id=2), max_per_guild=10)
+    store.add(sound("a"), max_per_guild=10)
+    assert [(s.guild_id, s.name) for s in store.all_sounds()] == [(1, "a"), (2, "b")]
 
 
 def test_schema_is_created_once(tmp_path: Path) -> None:

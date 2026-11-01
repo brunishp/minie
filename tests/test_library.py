@@ -1,5 +1,7 @@
+import logging
 import shutil
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -8,16 +10,28 @@ from minie.audio import AudioRejected, run_ffmpeg
 from minie.config import Settings
 from minie.errors import UserError
 from minie.library import SoundLibrary, normalise_name
-from minie.store import GuildFullError, SoundExistsError, SoundStore
+from minie.store import GuildFullError, Sound, SoundExistsError, SoundStore
 
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
 
 
 @pytest.fixture
-def library(tmp_path: Path) -> Iterator[SoundLibrary]:
+def store(tmp_path: Path) -> Iterator[SoundStore]:
     store = SoundStore(tmp_path / "minie.db")
-    yield SoundLibrary(store, Settings(data_dir=tmp_path, max_sounds=2, max_upload_bytes=2**20))
+    yield store
     store.close()
+
+
+@pytest.fixture
+def library(tmp_path: Path, store: SoundStore) -> SoundLibrary:
+    return SoundLibrary(store, Settings(data_dir=tmp_path, max_sounds=2, max_upload_bytes=2**20))
+
+
+def listed(store: SoundStore, name: str, guild_id: int = 1) -> Sound:
+    """A sound in the database only, for tests that don't need FFmpeg."""
+    sound = Sound(f"{name}-id", guild_id, name, 42, 1000, datetime(2026, 11, 1, tzinfo=UTC))
+    store.add(sound, max_per_guild=10)
+    return sound
 
 
 @pytest.fixture
@@ -85,3 +99,57 @@ async def test_a_rejected_upload_leaves_nothing_behind(
     assert library.sounds(1) == []
     assert files_under(tmp_path / "sounds") == []
     assert files_under(tmp_path / "tmp") == []
+
+
+def test_rename(library: SoundLibrary, store: SoundStore) -> None:
+    horn = listed(store, "horn")
+    renamed = library.rename(horn, " Air_Horn ")
+    assert renamed.name == "air_horn"
+    assert renamed.id == horn.id  # same file: only the name changes
+    assert library.find(1, "air_horn") == renamed
+    with pytest.raises(UserError, match="no sound by that name"):
+        library.find(1, "horn")
+
+
+def test_rename_refusals(library: SoundLibrary, store: SoundStore) -> None:
+    horn = listed(store, "horn")
+    listed(store, "drum")
+    with pytest.raises(UserError, match="already called"):
+        library.rename(horn, "HORN")
+    with pytest.raises(UserError, match="1 to 32 characters"):
+        library.rename(horn, "../up")
+    with pytest.raises(SoundExistsError):
+        library.rename(horn, "drum")
+    library.remove(horn)
+    with pytest.raises(UserError, match="no sound by that name"):
+        library.rename(horn, "gone")  # removed while the command ran
+
+
+def test_clean_up(
+    tmp_path: Path, library: SoundLibrary, store: SoundStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    kept = tmp_path / "sounds" / "1" / "horn-id.ogg"
+    lost = listed(store, "lost", guild_id=2)  # listed, but its file is gone
+    listed(store, "horn")
+    leftovers = [
+        tmp_path / "sounds" / "1" / "removed-id.ogg",  # the row was deleted, the file wasn't
+        tmp_path / "sounds" / "1" / "crashed-id.ogg.part",  # an encode cut short
+        tmp_path / "tmp" / "tmpabc" / "upload",  # an upload cut short
+    ]
+    unknown = tmp_path / "sounds" / "README.txt"
+    for path in (kept, unknown, *leftovers):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+    with caplog.at_level(logging.INFO, logger="minie.library"):
+        library.clean_up()
+
+    assert sorted(files_under(tmp_path / "sounds")) == sorted([kept, unknown])
+    assert not (tmp_path / "tmp").exists()
+    assert "Deleted 2 sound file(s)" in caplog.text
+    assert "'lost' of guild 2 has no file" in caplog.text
+    assert store.get(2, lost.name) == lost  # reported, not deleted
+
+
+def test_clean_up_with_nothing_there(library: SoundLibrary) -> None:
+    library.clean_up()

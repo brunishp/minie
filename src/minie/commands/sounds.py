@@ -1,4 +1,4 @@
-"""/play, /stop, /add, /list and /remove."""
+"""/play, /stop, /add, /list, /info, /rename and /remove."""
 
 import asyncio
 from pathlib import Path
@@ -86,23 +86,57 @@ def register(
         guild, _ = invoking_member(interaction)
         await reply(interaction, _format_list(library.sounds(guild.id)))
 
+    @tree.command(name="info", description="Show who added a sound, when, and its length")
+    @app_commands.describe(sound="Name of the sound")
+    @app_commands.autocomplete(sound=sound_choices)
+    async def info(interaction: discord.Interaction, sound: str) -> None:
+        guild, _ = invoking_member(interaction)
+        await reply(interaction, _format_info(library.find(guild.id, sound)))
+
+    @tree.command(name="rename", description="Rename a sound")
+    @app_commands.describe(sound="Name of the sound to rename", new_name=NAME_RULES)
+    @app_commands.autocomplete(sound=sound_choices)
+    async def rename(
+        interaction: discord.Interaction,
+        sound: str,
+        new_name: app_commands.Range[str, 1, 32],
+    ) -> None:
+        guild, member = invoking_member(interaction)
+        found = library.find(guild.id, sound)
+        _check_can_manage(found, member, "rename")
+        renamed = library.rename(found, new_name)
+        await reply(interaction, f"Renamed `{found.name}` to `{renamed.name}`.")
+        await panels.refresh(guild.id)
+
     @tree.command(name="remove", description="Remove a sound")
     @app_commands.describe(sound="Name of the sound to remove")
     @app_commands.autocomplete(sound=sound_choices)
     async def remove(interaction: discord.Interaction, sound: str) -> None:
         guild, member = invoking_member(interaction)
         found = library.find(guild.id, sound)
-        if found.uploader_id != member.id and not member.guild_permissions.manage_guild:
-            raise UserError(
-                "Only whoever added a sound, or someone with Manage Server, can remove it."
-            )
+        _check_can_manage(found, member, "remove")
         library.remove(found)
         await reply(interaction, f"Removed `{found.name}`.")
         await panels.refresh(guild.id)
 
 
+def _check_can_manage(sound: Sound, member: discord.Member, action: str) -> None:
+    if sound.uploader_id != member.id and not member.guild_permissions.manage_guild:
+        raise UserError(
+            f"Only whoever added a sound, or someone with Manage Server, can {action} it."
+        )
+
+
 def _seconds(sound: Sound) -> str:
     return f"{sound.duration_ms / 1000:.1f} s"
+
+
+def _format_info(sound: Sound) -> str:
+    # The mention never pings (the client allows no mentions), and Discord shows the
+    # timestamps in each reader's own time zone.
+    added = discord.utils.format_dt(sound.created_at, "D")
+    ago = discord.utils.format_dt(sound.created_at, "R")
+    return f"`{sound.name}` · {_seconds(sound)}\nAdded by <@{sound.uploader_id}> on {added} ({ago})"
 
 
 def _format_list(sounds: list[Sound]) -> str:

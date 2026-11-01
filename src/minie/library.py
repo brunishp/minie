@@ -5,9 +5,12 @@ the same rules.
 """
 
 import asyncio
+import logging
 import re
 import secrets
+import shutil
 import tempfile
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,6 +19,8 @@ from minie.config import Settings
 from minie.errors import UserError
 from minie.store import GuildFullError, Sound, SoundExistsError, SoundStore
 from minie.voice.ogg import read_opus_frames
+
+_log = logging.getLogger(__name__)
 
 NAME_PATTERN = re.compile(r"[a-z0-9_-]{1,32}")
 NAME_RULES = "1 to 32 characters: letters, digits, - and _"
@@ -98,11 +103,47 @@ class SoundLibrary:
             raise
         return sound
 
+    def rename(self, sound: Sound, new_name: str) -> Sound:
+        # Only the row changes: files are named after the sound's ID, never its name.
+        name = normalise_name(new_name)
+        if name == sound.name:
+            raise UserError(f"It's already called `{name}`.")
+        if not self._store.rename(sound.id, name):
+            raise UserError("There's no sound by that name, see /list.")
+        return replace(sound, name=name)
+
     def remove(self, sound: Sound) -> None:
         # Row first: if deleting the file fails, what's left is an unreferenced file, never
         # a listed sound that can't play.
         self._store.remove(sound.id)
         self._path(sound.guild_id, sound.id).unlink(missing_ok=True)
+
+    def clean_up(self) -> None:
+        """Delete what interrupted uploads and removals left behind. Run before any upload.
+
+        Assumes this process is the only one writing to the data directory: another
+        process's upload in progress would look abandoned.
+        """
+        if self._tmp_dir.exists():
+            shutil.rmtree(self._tmp_dir)
+        listed = {self._path(sound.guild_id, sound.id): sound for sound in self._store.all_sounds()}
+        # Only names this module writes: anything else in the directory isn't ours to delete.
+        stale = [
+            path
+            for path in self._sounds_dir.glob("*/*")
+            if path.name.endswith((".ogg", ".ogg.part")) and path not in listed
+        ]
+        for path in stale:
+            path.unlink()
+        if stale:
+            _log.info("Deleted %d sound file(s) no longer in the database", len(stale))
+        for path, sound in listed.items():
+            if not path.exists():
+                # Deleting the row would hide the problem: this is a backup that saved
+                # minie.db without sounds/, or the other way round.
+                _log.warning(
+                    "Sound %r of guild %s has no file at %s", sound.name, sound.guild_id, path
+                )
 
     async def frames(self, sound: Sound) -> list[bytes]:
         return await asyncio.to_thread(read_opus_frames, self._path(sound.guild_id, sound.id))

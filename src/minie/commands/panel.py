@@ -130,7 +130,7 @@ class Panels:
             sound = self.library.find(guild.id, name)
         except UserError:
             await self._redraw(interaction, guild.id, page)
-            raise UserError(f"`{name}` has been removed.") from None
+            raise UserError(f"`{name}` has been renamed or removed.") from None
         frames = await self.library.frames(sound)
         if must_connect:
             # Joining can take longer than the 3 s Discord allows: acknowledge silently now,

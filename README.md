@@ -97,7 +97,9 @@ uv run --env-file .env minie run
 | `/stop` | Stops the current sound and clears the queue |
 | `/add <name> <file>` | Adds a sound from an attached audio file: MP3, WAV, Ogg, FLAC, M4A or WebM |
 | `/list` | Lists the server's sounds with their lengths |
-| `/remove <sound>` | Removes a sound. Allowed for whoever added it, and for members with Manage Server |
+| `/info <sound>` | Shows who added a sound, when, and its length |
+| `/rename <sound> <new name>` | Renames a sound. Allowed for whoever added it, and for members with Manage Server |
+| `/remove <sound>` | Removes a sound. Same permission as `/rename` |
 | `/panel` | Opens your own grid of sound buttons: 20 per page, with ◀ ▶ to page and ⏹ to stop |
 
 - Playing a sound (`/play` or a panel button) from a voice channel brings the bot there if
@@ -227,4 +229,7 @@ Runtime files live in `data/` (git-ignored):
 - `builtin/test-tone.ogg`: generated at startup;
 - `tmp/`: uploads being converted.
 
-Back up `minie.db` and `sounds/` together.
+At startup, the bot empties `tmp/` and deletes sound files the database no longer lists, left
+by an upload or a removal cut short. It logs a warning for any listed sound whose file is
+missing, and keeps its entry: that means `minie.db` and `sounds/` came from different backups.
+Back them up together.

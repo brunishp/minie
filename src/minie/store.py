@@ -126,9 +126,28 @@ class SoundStore:
         if cursor.rowcount == 0:
             raise GuildFullError(f"This server already has {max_per_guild} sounds, the maximum.")
 
+    def rename(self, sound_id: str, name: str) -> bool:
+        """Rename a sound, unless its guild already has one called `name`.
+
+        Returns False when no sound has that ID any more, such as one removed meanwhile.
+        """
+        try:
+            with self._db:
+                cursor = self._db.execute(
+                    "UPDATE sounds SET name = ? WHERE id = ?", (name, sound_id)
+                )
+        except sqlite3.IntegrityError:
+            raise SoundExistsError(f"There's already a sound called `{name}`.") from None
+        return cursor.rowcount > 0
+
     def remove(self, sound_id: str) -> None:
         with self._db:
             self._db.execute("DELETE FROM sounds WHERE id = ?", (sound_id,))
+
+    def all_sounds(self) -> list[Sound]:
+        """Every guild's sounds, for checking the sound files against the database."""
+        rows = self._db.execute(f"SELECT {_COLUMNS} FROM sounds ORDER BY guild_id, name")
+        return [_sound(row) for row in rows]
 
     def close(self) -> None:
         if "_db" in self.__dict__:
