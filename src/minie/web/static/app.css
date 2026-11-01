@@ -121,3 +121,38 @@ button.sound {
 button.sound:active {
   transform: scale(0.97);
 }
+
+.tile {
+  position: relative;
+  display: flex;
+}
+
+.tile .sound {
+  flex: 1;
+}
+
+.tile.armed .sound {
+  outline: 3px solid var(--fg);
+  outline-offset: 2px;
+}
+
+button.star {
+  position: absolute;
+  top: 0.15rem;
+  right: 0.15rem;
+  padding: 0 0.3rem;
+  border: none;
+  background: transparent;
+  color: var(--accent-fg);
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+#armed {
+  font-weight: 600;
+}
+
+#media-keys[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}

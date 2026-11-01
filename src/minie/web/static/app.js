@@ -8,6 +8,8 @@ const state = {
   sounds: [],
   status: null,
   events: null,
+  favourites: new Set(),
+  armed: null, // the sound media keys fire
 };
 
 // Per-browser conveniences only; the page works the same when storage is unavailable.
@@ -85,6 +87,25 @@ async function playSound(name) {
   });
 }
 
+// Favourites come first in the grid, and are what next/previous step through.
+function ordered() {
+  const favourite = (sound) => (state.favourites.has(sound.name) ? 0 : 1);
+  return [...state.sounds].sort((a, b) => favourite(a) - favourite(b));
+}
+
+function cycle() {
+  const favourites = state.sounds.filter((sound) => state.favourites.has(sound.name));
+  return (favourites.length ? favourites : state.sounds).map((sound) => sound.name);
+}
+
+function toggleFavourite(name) {
+  if (state.favourites.has(name)) state.favourites.delete(name);
+  else state.favourites.add(name);
+  saved.set(`favourites.${state.guildId}`, [...state.favourites]);
+  renderGrid();
+  mediaKeys.refresh();
+}
+
 function renderGrid() {
   const grid = $("#grid");
   grid.replaceChildren();
@@ -92,15 +113,140 @@ function renderGrid() {
     grid.textContent = "No sounds yet. Add one with /add.";
     return;
   }
-  for (const sound of state.sounds) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "sound";
-    button.textContent = sound.name;
-    button.title = `${(sound.duration_ms / 1000).toFixed(1)} s`;
-    button.addEventListener("click", () => playSound(sound.name));
-    grid.append(button);
+  for (const sound of ordered()) {
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    tile.classList.toggle("armed", mediaKeys.enabled && sound.name === state.armed);
+
+    const play = document.createElement("button");
+    play.type = "button";
+    play.className = "sound";
+    play.textContent = sound.name;
+    play.title = `${(sound.duration_ms / 1000).toFixed(1)} s`;
+    play.addEventListener("click", () => playSound(sound.name));
+
+    const star = document.createElement("button");
+    star.type = "button";
+    star.className = "star";
+    const isFavourite = state.favourites.has(sound.name);
+    star.textContent = isFavourite ? "★" : "☆";
+    star.setAttribute("aria-pressed", String(isFavourite));
+    star.setAttribute("aria-label", `Favourite ${sound.name}`);
+    star.addEventListener("click", () => toggleFavourite(sound.name));
+
+    tile.append(play, star);
+    grid.append(tile);
   }
+}
+
+// Media keys, through the Media Session API. A page receives them, even in the background,
+// once it is the browser's active media session: arming plays a silent clip once, from a
+// click (browsers only start audio on a user gesture), then keeps it paused. Play and pause
+// both fire the armed sound, since the key toggles; next and previous move the arming.
+const mediaKeys = {
+  enabled: false,
+  audio: null,
+
+  async enable() {
+    if (!("mediaSession" in navigator)) {
+      toast("This browser doesn't support media keys.", { error: true });
+      return;
+    }
+    if (!this.audio) {
+      this.audio = new Audio(URL.createObjectURL(silentWav(10)));
+    }
+    await this.audio.play();
+    setTimeout(() => this.audio.pause(), 300);
+    const handlers = {
+      play: () => this.fire(),
+      pause: () => this.fire(),
+      nexttrack: () => this.move(1),
+      previoustrack: () => this.move(-1),
+      stop: () => attempt(() => api(guildPath("/stop"), { method: "POST", body: {} })),
+    };
+    for (const [action, handler] of Object.entries(handlers)) {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler);
+      } catch {
+        // an action this browser doesn't know: the others still work
+      }
+    }
+    this.enabled = true;
+    this.refresh();
+  },
+
+  disable() {
+    for (const action of ["play", "pause", "nexttrack", "previoustrack", "stop"]) {
+      try {
+        navigator.mediaSession.setActionHandler(action, null);
+      } catch {
+        // unsupported action
+      }
+    }
+    this.audio?.pause();
+    this.enabled = false;
+    this.refresh();
+  },
+
+  fire() {
+    navigator.mediaSession.playbackState = "paused";
+    if (state.armed) playSound(state.armed);
+  },
+
+  move(step) {
+    const names = cycle();
+    if (names.length === 0) return;
+    const index = names.indexOf(state.armed);
+    state.armed = names[(index + step + names.length) % names.length];
+    this.refresh();
+  },
+
+  // Keeps the armed sound valid and visible: on the page, and in the system's Now Playing
+  // overlay, which shows it without leaving a game.
+  refresh() {
+    const names = cycle();
+    if (!names.includes(state.armed)) state.armed = names[0] ?? null;
+    const button = $("#media-keys");
+    button.textContent = `Media keys: ${this.enabled ? "on" : "off"}`;
+    button.setAttribute("aria-pressed", String(this.enabled));
+    const armed = $("#armed");
+    armed.hidden = !this.enabled;
+    armed.textContent = state.armed ? `Armed: ${state.armed}` : "Nothing to arm";
+    if (this.enabled && "mediaSession" in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: state.armed ?? "No sound",
+        artist: "minie",
+        album: $("#guild").selectedOptions[0]?.textContent ?? "",
+      });
+      navigator.mediaSession.playbackState = "paused";
+    }
+    for (const tile of document.querySelectorAll(".tile")) {
+      const name = tile.querySelector(".sound").textContent;
+      tile.classList.toggle("armed", this.enabled && name === state.armed);
+    }
+  },
+};
+
+// A silent mono WAV: enough media for the browser to hand this page the media keys.
+function silentWav(seconds, rate = 8000) {
+  const samples = seconds * rate;
+  const view = new DataView(new ArrayBuffer(44 + samples * 2));
+  const text = (offset, value) =>
+    [...value].forEach((char, i) => view.setUint8(offset + i, char.charCodeAt(0)));
+  text(0, "RIFF");
+  view.setUint32(4, 36 + samples * 2, true);
+  text(8, "WAVE");
+  text(12, "fmt ");
+  view.setUint32(16, 16, true); // fmt chunk size
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true); // bytes per second
+  view.setUint16(32, 2, true); // bytes per frame
+  view.setUint16(34, 16, true); // bits per sample
+  text(36, "data");
+  view.setUint32(40, samples * 2, true);
+  return new Blob([view.buffer], { type: "audio/wav" });
 }
 
 function renderStatus() {
@@ -119,6 +265,7 @@ function renderStatus() {
 async function loadSounds() {
   state.sounds = (await api(guildPath("/sounds"))).sounds;
   renderGrid();
+  mediaKeys.refresh();
 }
 
 async function loadStatus() {
@@ -144,6 +291,7 @@ function follow() {
 
 function selectGuild(guildId) {
   state.guildId = guildId;
+  state.favourites = new Set(saved.get(`favourites.${guildId}`, []));
   saved.set("guild", guildId);
   $("#board").hidden = false;
   follow();
@@ -176,6 +324,9 @@ async function main() {
 
   $("#stop").addEventListener("click", () => attempt(() => api(guildPath("/stop"), { method: "POST", body: {} })));
   $("#leave").addEventListener("click", () => attempt(() => api(guildPath("/leave"), { method: "POST", body: {} })));
+  $("#media-keys").addEventListener("click", () =>
+    attempt(() => (mediaKeys.enabled ? mediaKeys.disable() : mediaKeys.enable())),
+  );
   selectGuild(picker.value);
 }
 
