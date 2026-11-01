@@ -9,7 +9,7 @@ import sys
 
 import discord
 
-from minie import audio, preflight
+from minie import audio, preflight, web
 from minie.bot import MinieBot, sync_commands
 from minie.config import ConfigError, Settings
 from minie.log import setup_logging
@@ -108,7 +108,14 @@ async def _serve(bot: MinieBot, token: str) -> None:
     with contextlib.suppress(NotImplementedError):  # no signal handlers on Windows
         asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, main_task.cancel)
     async with bot:
-        await bot.start(token)
+        runner = None
+        if bot.settings.web_port is not None:
+            runner = await web.start(bot.web_services(), bot.settings)
+        try:
+            await bot.start(token)
+        finally:
+            if runner is not None:
+                await runner.cleanup()
 
 
 def _sync(settings: Settings, *, global_: bool, clear: bool) -> int:

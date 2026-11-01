@@ -19,6 +19,7 @@ from minie.playback import PlaybackService
 from minie.store import SoundStore
 from minie.voice.base import VoicePlayer
 from minie.voice.discordpy import DiscordPyVoicePlayer
+from minie.web import Services
 
 _log = logging.getLogger(__name__)
 
@@ -48,11 +49,12 @@ class MinieBot(discord.Client):
             cooldown=settings.cooldown,
             events=self.events,
         )
+        self.presence = DiscordPresence(self)
         self.soundboard = Soundboard(
             voice=self.voice,
             playback=self.playback,
             library=self.library,
-            presence=DiscordPresence(self),
+            presence=self.presence,
             test_tone=self.test_tone,
         )
         self.tree = app_commands.CommandTree(
@@ -67,6 +69,18 @@ class MinieBot(discord.Client):
         voice_commands.register(self.tree, self.soundboard)
         sounds.register(self.tree, soundboard=self.soundboard, library=self.library)
         panel.register(self.tree, self.panels)
+
+    def web_services(self) -> Services:
+        return Services(
+            soundboard=self.soundboard,
+            library=self.library,
+            playback=self.playback,
+            events=self.events,
+            presence=self.presence,
+            application_id=lambda: self.application_id,
+            guild_names=lambda: {guild.id: guild.name for guild in self.guilds},
+            ready=self.is_ready,
+        )
 
     async def setup_hook(self) -> None:
         # Lets panels opened before a restart keep working.

@@ -9,6 +9,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from minie.playback import Overlap
 
@@ -43,6 +44,18 @@ class Settings:
     overlap: Overlap = Overlap.INTERRUPT
     queue_max: int = 5
 
+    web_port: int | None = None
+    """The web UI's port; None leaves the web UI off."""
+    web_host: str = "127.0.0.1"
+    web_public_url: str | None = None
+    """Where browsers reach the web UI; defaults to http://localhost:<port>."""
+    oauth_client_secret: str | None = field(default=None, repr=False)
+
+    @property
+    def web_url(self) -> str:
+        """The web UI's public origin, without a trailing slash."""
+        return self.web_public_url or f"http://localhost:{self.web_port}"
+
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> Settings:
         return cls(
@@ -65,6 +78,10 @@ class Settings:
             cooldown=_number(env, "MINIE_COOLDOWN_S", cls.cooldown, 0, 3600),
             overlap=_overlap(env, "MINIE_OVERLAP"),
             queue_max=_integer(env, "MINIE_QUEUE_MAX", cls.queue_max, 1, 50),
+            web_port=_integer(env, "MINIE_WEB_PORT", 0, 0, 65535) or None,
+            web_host=env.get("MINIE_WEB_HOST", "").strip() or cls.web_host,
+            web_public_url=_origin(env, "MINIE_WEB_PUBLIC_URL"),
+            oauth_client_secret=env.get("MINIE_OAUTH_CLIENT_SECRET", "").strip() or None,
         )
 
     def require_token(self) -> str:
@@ -118,6 +135,16 @@ def _overlap(env: Mapping[str, str], key: str) -> Overlap:
     except ValueError:
         choices = " or ".join(mode.value for mode in Overlap)
         raise ConfigError(f"{key} must be {choices}, got {raw!r}") from None
+
+
+def _origin(env: Mapping[str, str], key: str) -> str | None:
+    raw = env.get(key, "").strip().rstrip("/")
+    if not raw:
+        return None
+    parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https") or not parts.netloc or parts.path or parts.query:
+        raise ConfigError(f"{key} must be an origin such as https://minie.example, got {raw!r}")
+    return raw
 
 
 def _log_level(env: Mapping[str, str], key: str) -> str:

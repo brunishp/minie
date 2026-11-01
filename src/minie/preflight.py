@@ -35,6 +35,7 @@ def run_checks(settings: Settings) -> list[Check]:
         _check_opus(settings.opus_library),
         _check_ffmpeg(settings.ffmpeg),
         _check_ffprobe(settings.ffprobe),
+        _check_web(settings),
     ]
 
 
@@ -95,6 +96,20 @@ def _check_ffprobe(command: str) -> Check:
             "ffprobe", False, f"`{command}` not found; it ships with FFmpeg, or set MINIE_FFPROBE"
         )
     return Check("ffprobe", True, f"{_version(path)} ({path})")
+
+
+def _check_web(settings: Settings) -> Check:
+    if settings.web_port is None:
+        return Check("web UI", True, "off (MINIE_WEB_PORT is not set)")
+    if settings.oauth_client_secret is None:
+        return Check(
+            "web UI",
+            False,
+            "MINIE_OAUTH_CLIENT_SECRET is not set (Developer Portal > OAuth2 > Client Secret)",
+        )
+    return Check(
+        "web UI", True, f"{settings.web_url}, listening on {settings.web_host}:{settings.web_port}"
+    )
 
 
 def _output(*command: str) -> str:

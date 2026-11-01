@@ -70,6 +70,9 @@ def test_sound_limits_and_playback_rules() -> None:
         ("MINIE_LOUDNESS_LUFS", "0"),
         ("MINIE_QUEUE_MAX", "2.5"),
         ("MINIE_OVERLAP", "shuffle"),
+        ("MINIE_WEB_PORT", "70000"),
+        ("MINIE_WEB_PUBLIC_URL", "localhost:8080"),
+        ("MINIE_WEB_PUBLIC_URL", "https://minie.example/sub"),
     ],
 )
 def test_rejects_malformed_values(key: str, value: str) -> None:
@@ -77,8 +80,34 @@ def test_rejects_malformed_values(key: str, value: str) -> None:
         Settings.from_env({key: value})
 
 
-def test_token_stays_out_of_repr() -> None:
-    settings = Settings.from_env({"DISCORD_TOKEN": "very.secret.token"})
+def test_web_ui_settings() -> None:
+    assert Settings.from_env({}).web_port is None
+    local = Settings.from_env({"MINIE_WEB_PORT": "8080"})
+    assert (local.web_host, local.web_url) == ("127.0.0.1", "http://localhost:8080")
+    public = Settings.from_env(
+        {
+            "MINIE_WEB_PORT": "8080",
+            "MINIE_WEB_HOST": "0.0.0.0",
+            "MINIE_WEB_PUBLIC_URL": "https://minie.example/",
+            "MINIE_OAUTH_CLIENT_SECRET": " s3cret ",
+        }
+    )
+    assert public.web_url == "https://minie.example"
+    assert public.oauth_client_secret == "s3cret"
+
+
+def test_web_check_needs_the_client_secret() -> None:
+    from minie.preflight import _check_web
+
+    assert _check_web(Settings()).ok
+    assert not _check_web(Settings(web_port=8080)).ok
+    assert _check_web(Settings(web_port=8080, oauth_client_secret="x")).ok
+
+
+def test_secrets_stay_out_of_repr() -> None:
+    settings = Settings.from_env(
+        {"DISCORD_TOKEN": "very.secret.token", "MINIE_OAUTH_CLIENT_SECRET": "oauth-secret"}
+    )
     assert "secret" not in repr(settings)
 
 

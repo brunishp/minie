@@ -30,6 +30,10 @@ class Overlap(StrEnum):
     """Play after the current sound and any already waiting, up to a maximum queue length."""
 
 
+class BusyError(UserError):
+    """The bot plays, or has a queue, in another channel."""
+
+
 @dataclass(frozen=True)
 class Status:
     channel_id: int | None
@@ -131,7 +135,7 @@ class PlaybackService:
         # Never pull the bot away from members who are listening to it, or waiting for it.
         busy = self._voice.is_playing(guild_id) or state.worker is not None or bool(state.queue)
         if current is not None and busy:
-            raise UserError(f"I'm busy in <#{current}>. Join it, or wait until it's quiet there.")
+            raise BusyError(f"I'm busy in <#{current}>. Join it, or wait until it's quiet there.")
         await self._voice.join(guild_id, channel_id)
         self._changed(guild_id)
 
