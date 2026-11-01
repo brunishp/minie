@@ -103,6 +103,22 @@ description change. The bot deliberately doesn't sync at startup.
   or XChaCha20-Poly1305) as a new `VoicePlayer`, with DAVE through davey or dave.py.
   The only AEAD mode discord.py implements is `aead_xchacha20_poly1305_rtpsize`; AES-256-GCM
   (`aead_aes256_gcm_rtpsize`) would be new code.
+- Voice commands ("minie airhorn"), once the protocol track has a receive path. discord.py
+  only sends audio, and `discord-ext-voice-recv` (no commit since 2025-06) has no DAVE
+  decryption merged.
+  - Receive behind a `VoiceListener` seam beside `VoicePlayer`, yielding each speaker's Opus
+    frames: UDP, transport AEAD, RTP, mapping streams (SSRC) to users,
+    `davey.DaveSession.decrypt` with per-sender keys, Opus decode.
+  - Opt-in per member. Drop everyone else's packets before DAVE decryption, so their voice is
+    never heard. Store no audio. Joining undeafened shows members the bot listens.
+  - Voice activity detection (Silero or WebRTC) picks out short utterances. Recognition runs
+    on CPU: Vosk with a grammar of "minie" plus the sounds' spoken forms (`bad_horn-2` →
+    "bad horn two"), or faster-whisper tiny/base in int8 with fuzzy matching. It runs outside
+    the event loop, from an optional dependency group.
+  - Recognised commands go through `PlaybackService.play`, so the cooldown and the busy rule
+    apply.
+  - First benchmark recognition offline on the target container, with recorded clips. Check
+    Discord's Developer Policy on processing voice before enabling it on any server.
 
 ## Git
 
