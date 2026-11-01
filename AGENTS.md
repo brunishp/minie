@@ -32,12 +32,18 @@ description change. The bot deliberately doesn't sync at startup.
 - **20 ms Opus frames.** Every sound is Ogg/Opus, 48 kHz stereo, `FRAME_DURATION_MS = 20`
   (`audio.OPUS_OUTPUT_ARGS`). `voice/ogg.read_opus_frames` refuses anything else: senders emit
   one packet per 20 ms tick. Playback never transcodes.
-- **Where the bot goes.** Only `PlaybackService` (`join`, `play`) connects or moves the bot,
-  under its per-guild lock, and never away from a channel where it plays or has a queue.
-  Commands check permissions first with `commands.common.target_channel`, and defer when it
-  says a connection is needed.
+- **Where the bot goes.** Only `PlaybackService` (`join`, `play`, `leave`) connects, moves or
+  disconnects the bot, under its per-guild lock, and never away from a channel where it plays
+  or has a queue. Callers check permissions first with `Soundboard.target_channel`, and defer
+  when it says a connection is needed.
 - **Rules outside the commands.** Upload rules live in `library.py`, playback rules (cooldown,
-  interrupt or queue) in `playback.py`, so the planned web UI reuses them. Commands stay thin.
+  interrupt or queue) in `playback.py`, and who may do what in `control.py`: `Soundboard`,
+  which sees members as a `Caller` and asks Discord questions through the `Presence` seam.
+  Slash commands, panel buttons and the web UI all go through `Soundboard`, and stay thin.
+- **Change events.** The library publishes `Topic.SOUNDS` and `PlaybackService` publishes
+  `Topic.STATUS` on every change (`events.py`). Panels and web pages listen, so a change from
+  any source reaches all of them; nothing calls them directly. Events carry no state:
+  listeners read the current state themselves.
 - **Command errors.** Raise `UserError` (`errors.py`) for anything the user should read;
   `bot._on_command_error` shows it, and logs every other exception with a generic reply. Reply
   with `commands.common.reply` (ephemeral, works before or after deferring). Defer anything
@@ -80,8 +86,9 @@ description change. The bot deliberately doesn't sync at startup.
 
 ## Tests
 
-- `tests/test_playback.py` has `FakeVoice`, an in-memory `VoicePlayer`. Use it for anything
-  above the voice seam.
+- `tests/fakes.py` has `FakeVoice` (an in-memory `VoicePlayer`), `FakePresence`, a clock and
+  an Ogg/Opus writer. Use them for anything above the voice and Discord seams; tests import
+  them with `from fakes import …`.
 - `tests/test_voice_discordpy.py` runs the discord.py adapter against discord.py's real sender
   thread with a fake connection.
 - `tests/test_panel.py` checks panel layouts and button ID round-trips, and fakes the few

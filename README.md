@@ -203,7 +203,9 @@ src/minie/
 ├── cli.py, config.py, log.py   # entry point, environment settings, logging (secrets redacted)
 ├── preflight.py                # voice stack check run by `minie check` and `minie run`
 ├── bot.py                      # discord.Client, command tree, error handling, command sync
-├── commands/                   # slash commands; they only talk to the services below
+├── commands/                   # slash commands and /panel; they only talk to the services below
+├── control.py                  # who may do what, shared by commands, panel and web UI
+├── events.py                   # change notifications: sounds and playback status
 ├── library.py                  # per-server sounds: upload rules, files, frames for playback
 ├── store.py                    # SQLite metadata, with numbered schema migrations
 ├── audio.py                    # FFmpeg: probe, loudness, encode once to Ogg/Opus (20 ms frames)
@@ -219,8 +221,8 @@ implementation can replace `voice/discordpy.py` without touching the commands. d
 `VoiceProtocol` hook (`channel.connect(cls=...)`) hands such a replacement the voice server
 credentials, after which it runs the voice WebSocket, UDP/RTP transport and DAVE itself.
 
-Uploads and playback rules live in `library.py` and `playback.py` rather than in the commands,
-so the planned web UI can reuse them unchanged.
+Uploads, playback and permission rules live in `library.py`, `playback.py` and `control.py`
+rather than in the commands, so the web UI reuses them unchanged.
 
 Runtime files live in `data/` (git-ignored):
 

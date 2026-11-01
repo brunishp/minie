@@ -16,12 +16,12 @@ from typing import Any, NamedTuple, Protocol, Self, cast
 import discord
 from discord import app_commands
 
-from minie.commands.common import invoking_member, report_error, require_listener, target_channel
+from minie.commands.common import invoking_caller, invoking_member, report_error
+from minie.control import Soundboard
 from minie.errors import UserError
-from minie.library import SoundLibrary
-from minie.playback import PlaybackService
+from minie.events import EventHub, Topic
+from minie.library import SoundLibrary, SoundNotFound
 from minie.store import Sound
-from minie.voice.base import VoicePlayer
 
 _log = logging.getLogger(__name__)
 
@@ -107,8 +107,7 @@ class PanelRegistry:
 class Panels:
     """What the panel's buttons act on. The bot exposes it as `client.panels`."""
 
-    voice: VoicePlayer
-    playback: PlaybackService
+    soundboard: Soundboard
     library: SoundLibrary
     registry: PanelRegistry = field(default_factory=PanelRegistry)
 
@@ -124,37 +123,46 @@ class Panels:
         self.registry.track(interaction, drawing.page)
 
     async def play(self, interaction: discord.Interaction, page: int, name: str) -> None:
-        guild, member = invoking_member(interaction)
-        channel, must_connect = target_channel(self.voice, guild, member)
+        caller = invoking_caller(interaction)
         try:
-            sound = self.library.find(guild.id, name)
-        except UserError:
-            await self._redraw(interaction, guild.id, page)
+            prepared = await self.soundboard.prepare(caller, name)
+        except SoundNotFound:
+            await self._redraw(interaction, caller.guild_id, page)
             raise UserError(f"`{name}` has been renamed or removed.") from None
-        frames = await self.library.frames(sound)
-        if must_connect:
+        if prepared.must_connect:
             # Joining can take longer than the 3 s Discord allows: acknowledge silently now,
             # redraw once done.
             await interaction.response.defer()
-        await self.playback.play(guild.id, member.id, channel.id, frames)
+        await self.soundboard.play(prepared)
         # Answering with a redraw costs the same single request as a plain acknowledgement,
         # and picks up any sound added or removed since the panel was last drawn.
-        await self._redraw(interaction, guild.id, page)
+        await self._redraw(interaction, caller.guild_id, page)
 
     async def turn_page(self, interaction: discord.Interaction, page: int) -> None:
         guild, _ = invoking_member(interaction)
         await self._redraw(interaction, guild.id, page)
 
     async def stop(self, interaction: discord.Interaction, page: int) -> None:
-        guild, member = invoking_member(interaction)
-        require_listener(self.voice, guild.id, member)
-        if not await self.playback.stop(guild.id):
+        caller = invoking_caller(interaction)
+        if not await self.soundboard.stop(caller):
             raise UserError("Nothing was playing.")
-        await self._redraw(interaction, guild.id, page)
+        await self._redraw(interaction, caller.guild_id, page)
 
     async def refresh(self, guild_id: int) -> None:
         """Redraw the open panels of a guild, after its sounds changed."""
         await self.registry.refresh(guild_id, self.library.sounds(guild_id))
+
+    async def follow(self, events: EventHub) -> None:
+        """Refresh open panels whenever sounds change, from any source. Runs until cancelled."""
+        with events.subscribe() as subscription:
+            while True:
+                for event in await subscription.next():
+                    if event.topic is not Topic.SOUNDS:
+                        continue
+                    try:
+                        await self.refresh(event.guild_id)
+                    except Exception:
+                        _log.exception("Could not refresh the panels of guild %s", event.guild_id)
 
     async def _redraw(self, interaction: discord.Interaction, guild_id: int, page: int) -> None:
         drawing = render(self.library.sounds(guild_id), page)

@@ -1,31 +1,18 @@
 """/play, /stop, /add, /list, /info, /rename and /remove."""
 
-import asyncio
-from pathlib import Path
-
 import discord
 from discord import app_commands
 
-from minie.commands.common import invoking_member, reply, require_listener, target_channel
-from minie.commands.panel import Panels
-from minie.errors import UserError
+from minie.commands.common import invoking_caller, invoking_member, reply
+from minie.control import Soundboard
 from minie.library import NAME_RULES, SoundLibrary
-from minie.playback import PlaybackService
 from minie.store import Sound
-from minie.voice.base import VoicePlayer
-from minie.voice.ogg import read_opus_frames
 
 MESSAGE_LIMIT = 2000
 
 
 def register(
-    tree: app_commands.CommandTree,
-    *,
-    voice: VoicePlayer,
-    playback: PlaybackService,
-    library: SoundLibrary,
-    panels: Panels,
-    test_tone: Path,
+    tree: app_commands.CommandTree, *, soundboard: Soundboard, library: SoundLibrary
 ) -> None:
     async def sound_choices(
         interaction: discord.Interaction, current: str
@@ -41,19 +28,12 @@ def register(
     @app_commands.describe(sound="Name of the sound (see /list)")
     @app_commands.autocomplete(sound=sound_choices)
     async def play(interaction: discord.Interaction, sound: str | None = None) -> None:
-        guild, member = invoking_member(interaction)
-        channel, must_connect = target_channel(voice, guild, member)
-        if sound is None:
-            label = "the test tone"
-            frames = await asyncio.to_thread(read_opus_frames, test_tone)
-        else:
-            found = library.find(guild.id, sound)
-            label = f"`{found.name}`"
-            frames = await library.frames(found)
-        if must_connect:
+        prepared = await soundboard.prepare(invoking_caller(interaction), sound)
+        label = "the test tone" if prepared.sound is None else f"`{prepared.sound.name}`"
+        if prepared.must_connect:
             # Joining first can take longer than the 3 s Discord allows for an answer.
             await interaction.response.defer(ephemeral=True, thinking=True)
-        position = await playback.play(guild.id, member.id, channel.id, frames)
+        position = await soundboard.play(prepared)
         await reply(
             interaction,
             f"Playing {label}." if position == 0 else f"Queued {label} (position {position}).",
@@ -61,9 +41,7 @@ def register(
 
     @tree.command(name="stop", description="Stop the current sound and clear the queue")
     async def stop(interaction: discord.Interaction) -> None:
-        guild, member = invoking_member(interaction)
-        require_listener(voice, guild.id, member)
-        stopped = await playback.stop(guild.id)
+        stopped = await soundboard.stop(invoking_caller(interaction))
         await reply(interaction, "Stopped." if stopped else "Nothing was playing.")
 
     @tree.command(name="add", description="Add a sound from an audio file")
@@ -73,13 +51,12 @@ def register(
         name: app_commands.Range[str, 1, 32],
         file: discord.Attachment,
     ) -> None:
-        guild, member = invoking_member(interaction)
-        sound_name = library.check_can_add(guild.id, name, file.size)
+        caller = invoking_caller(interaction)
+        sound_name = soundboard.check_can_add(caller, name, file.size)
         # Downloading and two FFmpeg passes take far longer than the 3 s Discord allows.
         await interaction.response.defer(ephemeral=True, thinking=True)
-        sound = await library.add(guild.id, member.id, sound_name, await file.read())
+        sound = await soundboard.add(caller, sound_name, await file.read())
         await reply(interaction, f"Added `{sound.name}` ({_seconds(sound)}).")
-        await panels.refresh(guild.id)  # after replying: the uploader needn't wait for it
 
     @tree.command(name="list", description="List this server's sounds")
     async def list_sounds(interaction: discord.Interaction) -> None:
@@ -101,30 +78,15 @@ def register(
         sound: str,
         new_name: app_commands.Range[str, 1, 32],
     ) -> None:
-        guild, member = invoking_member(interaction)
-        found = library.find(guild.id, sound)
-        _check_can_manage(found, member, "rename")
-        renamed = library.rename(found, new_name)
-        await reply(interaction, f"Renamed `{found.name}` to `{renamed.name}`.")
-        await panels.refresh(guild.id)
+        before, after = soundboard.rename(invoking_caller(interaction), sound, new_name)
+        await reply(interaction, f"Renamed `{before.name}` to `{after.name}`.")
 
     @tree.command(name="remove", description="Remove a sound")
     @app_commands.describe(sound="Name of the sound to remove")
     @app_commands.autocomplete(sound=sound_choices)
     async def remove(interaction: discord.Interaction, sound: str) -> None:
-        guild, member = invoking_member(interaction)
-        found = library.find(guild.id, sound)
-        _check_can_manage(found, member, "remove")
-        library.remove(found)
-        await reply(interaction, f"Removed `{found.name}`.")
-        await panels.refresh(guild.id)
-
-
-def _check_can_manage(sound: Sound, member: discord.Member, action: str) -> None:
-    if sound.uploader_id != member.id and not member.guild_permissions.manage_guild:
-        raise UserError(
-            f"Only whoever added a sound, or someone with Manage Server, can {action} it."
-        )
+        removed = soundboard.remove(invoking_caller(interaction), sound)
+        await reply(interaction, f"Removed `{removed.name}`.")
 
 
 def _seconds(sound: Sound) -> str:

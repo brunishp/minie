@@ -1,7 +1,7 @@
 """Each guild's sound library: uploads in, 20 ms Opus frames out.
 
-Kept apart from the slash commands so the planned web UI can add and play sounds through
-the same rules.
+Kept apart from the slash commands so the web UI adds and plays sounds through the same rules.
+Every change to a guild's sounds is published as a `Topic.SOUNDS` event.
 """
 
 import asyncio
@@ -17,6 +17,7 @@ from pathlib import Path
 from minie import audio
 from minie.config import Settings
 from minie.errors import UserError
+from minie.events import EventHub, Topic
 from minie.store import GuildFullError, Sound, SoundExistsError, SoundStore
 from minie.voice.ogg import read_opus_frames
 
@@ -28,6 +29,10 @@ NAME_RULES = "1 to 32 characters: letters, digits, - and _"
 MAX_CONCURRENT_CONVERSIONS = 2
 
 
+class SoundNotFound(UserError):
+    pass
+
+
 def normalise_name(raw: str) -> str:
     """Sound names are compared ignoring case, so they're stored in lowercase."""
     name = raw.strip().lower()
@@ -37,9 +42,12 @@ def normalise_name(raw: str) -> str:
 
 
 class SoundLibrary:
-    def __init__(self, store: SoundStore, settings: Settings) -> None:
+    def __init__(
+        self, store: SoundStore, settings: Settings, events: EventHub | None = None
+    ) -> None:
         self._store = store
         self._settings = settings
+        self._events = events or EventHub()
         self._sounds_dir = settings.data_dir / "sounds"
         self._tmp_dir = settings.data_dir / "tmp"
         self._conversions = asyncio.Semaphore(MAX_CONCURRENT_CONVERSIONS)
@@ -47,7 +55,7 @@ class SoundLibrary:
     def find(self, guild_id: int, name: str) -> Sound:
         sound = self._store.get(guild_id, name.strip().lower())
         if sound is None:
-            raise UserError("There's no sound by that name, see /list.")
+            raise SoundNotFound("There's no sound by that name, see /list.")
         return sound
 
     def sounds(self, guild_id: int) -> list[Sound]:
@@ -101,6 +109,7 @@ class SoundLibrary:
         except BaseException:
             path.unlink(missing_ok=True)
             raise
+        self._events.publish(guild_id, Topic.SOUNDS)
         return sound
 
     def rename(self, sound: Sound, new_name: str) -> Sound:
@@ -109,13 +118,15 @@ class SoundLibrary:
         if name == sound.name:
             raise UserError(f"It's already called `{name}`.")
         if not self._store.rename(sound.id, name):
-            raise UserError("There's no sound by that name, see /list.")
+            raise SoundNotFound("There's no sound by that name, see /list.")
+        self._events.publish(sound.guild_id, Topic.SOUNDS)
         return replace(sound, name=name)
 
     def remove(self, sound: Sound) -> None:
         # Row first: if deleting the file fails, what's left is an unreferenced file, never
         # a listed sound that can't play.
         self._store.remove(sound.id)
+        self._events.publish(sound.guild_id, Topic.SOUNDS)
         self._path(sound.guild_id, sound.id).unlink(missing_ok=True)
 
     def clean_up(self) -> None:

@@ -1,41 +1,10 @@
 import random
-import struct
 from pathlib import Path
 
 import pytest
+from fakes import STEREO_10MS, STEREO_20MS, mux, write_opus
 
 from minie.voice.ogg import OggError, iter_packets, opus_packet_duration_ms, read_opus_frames
-
-STEREO_20MS = bytes([31 << 3 | 0b100])  # TOC: CELT fullband 20 ms, stereo, one frame
-STEREO_10MS = bytes([30 << 3 | 0b100])  # TOC: CELT fullband 10 ms, stereo, one frame
-OPUS_TAGS = b"OpusTags" + struct.pack("<I", 4) + b"test" + struct.pack("<I", 0)
-
-
-def mux(packets: list[bytes], *, segments_per_page: int = 255, serial: int = 1) -> bytes:
-    """A tiny Ogg muxer: lace the packets into segments, then cut the segments into pages."""
-    segments: list[bytes] = []
-    for packet in packets:
-        full, _ = divmod(len(packet), 255)
-        segments += [packet[i * 255 : (i + 1) * 255] for i in range(full)]
-        segments.append(packet[full * 255 :])
-    out = bytearray()
-    continued = False
-    for sequence, start in enumerate(range(0, len(segments), segments_per_page)):
-        page = segments[start : start + segments_per_page]
-        flags = 0x01 if continued else 0x00
-        out += struct.pack("<4sBBqIIIB", b"OggS", 0, flags, 0, serial, sequence, 0, len(page))
-        out += bytes(len(segment) for segment in page) + b"".join(page)
-        continued = len(page[-1]) == 255
-    return bytes(out)
-
-
-def opus_head(*, channels: int = 2, mapping_family: int = 0) -> bytes:
-    return b"OpusHead" + struct.pack("<BBHIhB", 1, channels, 312, 48000, 0, mapping_family)
-
-
-def write_opus(path: Path, frames: list[bytes], **head: int) -> Path:
-    path.write_bytes(mux([opus_head(**head), OPUS_TAGS, *frames]))
-    return path
 
 
 @pytest.mark.parametrize("segments_per_page", [1, 2, 3, 255])

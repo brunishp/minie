@@ -1,5 +1,7 @@
 """The Discord client: gateway session, slash command tree and the services behind it."""
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import Sequence
 
@@ -10,6 +12,8 @@ from minie.commands import panel, sounds
 from minie.commands import voice as voice_commands
 from minie.commands.common import report_error
 from minie.config import Settings
+from minie.control import DiscordPresence, Soundboard
+from minie.events import EventHub, Topic
 from minie.library import SoundLibrary
 from minie.playback import PlaybackService
 from minie.store import SoundStore
@@ -33,14 +37,23 @@ class MinieBot(discord.Client):
 
         self.settings = settings
         self.test_tone = settings.data_dir / TEST_TONE_FILE
+        self.events = EventHub()
         self.voice: VoicePlayer = DiscordPyVoicePlayer(self)
         self.store = SoundStore(settings.data_dir / "minie.db")
-        self.library = SoundLibrary(self.store, settings)
+        self.library = SoundLibrary(self.store, settings, self.events)
         self.playback = PlaybackService(
             self.voice,
             overlap=settings.overlap,
             queue_max=settings.queue_max,
             cooldown=settings.cooldown,
+            events=self.events,
+        )
+        self.soundboard = Soundboard(
+            voice=self.voice,
+            playback=self.playback,
+            library=self.library,
+            presence=DiscordPresence(self),
+            test_tone=self.test_tone,
         )
         self.tree = app_commands.CommandTree(
             self,
@@ -49,26 +62,33 @@ class MinieBot(discord.Client):
         )
         self.tree.error(_on_command_error)
         # Read by the panel's buttons through `interaction.client.panels`.
-        self.panels = panel.Panels(voice=self.voice, playback=self.playback, library=self.library)
-        voice_commands.register(self.tree, self.voice, self.playback)
-        sounds.register(
-            self.tree,
-            voice=self.voice,
-            playback=self.playback,
-            library=self.library,
-            panels=self.panels,
-            test_tone=self.test_tone,
-        )
+        self.panels = panel.Panels(soundboard=self.soundboard, library=self.library)
+        self._background: set[asyncio.Task[None]] = set()
+        voice_commands.register(self.tree, self.soundboard)
+        sounds.register(self.tree, soundboard=self.soundboard, library=self.library)
         panel.register(self.tree, self.panels)
 
     async def setup_hook(self) -> None:
         # Lets panels opened before a restart keep working.
         self.add_dynamic_items(*panel.BUTTONS)
+        self._background.add(asyncio.create_task(self.panels.follow(self.events)))
 
     async def on_ready(self) -> None:
         _log.info("Connected as %s, in %d guild(s)", self.user, len(self.guilds))
 
+    async def on_voice_state_update(
+        self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+    ) -> None:
+        # The bot itself moved or disconnected by a moderator, or by a network drop.
+        if self.user is not None and member.id == self.user.id:
+            self.events.publish(member.guild.id, Topic.STATUS)
+
     async def close(self) -> None:
+        for task in self._background:
+            task.cancel()
+        for task in self._background:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await super().close()
         self.store.close()
 

@@ -1,65 +1,16 @@
 import asyncio
 
 import pytest
+from fakes import Clock, FakeVoice
 
 from minie.errors import UserError
-from minie.playback import Overlap, PlaybackService
-from minie.voice.base import NotConnectedError, OpusFrames, VoiceError
+from minie.events import EventHub, Topic
+from minie.playback import Overlap, PlaybackService, Status
+from minie.voice.base import VoiceError
 
 GUILD = 1
 HERE, ELSEWHERE = 2, 3  # voice channels
 ALICE, BOB, CAROL = 10, 11, 12
-
-
-class FakeVoice:
-    """A VoicePlayer whose sounds play until the test calls `finish`."""
-
-    def __init__(self, channel: int | None = HERE) -> None:
-        self.channel = channel
-        self.joins: list[int] = []
-        self.join_error: VoiceError | None = None
-        self.started: list[list[bytes]] = []
-        self.current: asyncio.Future[None] | None = None
-
-    def connected_channel_id(self, guild_id: int) -> int | None:
-        return self.channel
-
-    def is_playing(self, guild_id: int) -> bool:
-        return self.current is not None and not self.current.done()
-
-    async def join(self, guild_id: int, channel_id: int) -> None:
-        if self.join_error is not None:
-            raise self.join_error
-        self.joins.append(channel_id)
-        self.channel = channel_id
-
-    async def leave(self, guild_id: int) -> None:
-        self.channel = None
-
-    async def play(self, guild_id: int, frames: OpusFrames) -> asyncio.Future[None]:
-        if self.channel is None:
-            raise NotConnectedError("not connected")
-        if self.is_playing(guild_id):
-            raise VoiceError("already playing")
-        self.started.append(list(frames))
-        self.current = asyncio.get_running_loop().create_future()
-        return self.current
-
-    async def stop(self, guild_id: int) -> None:
-        if self.is_playing(guild_id):
-            self.finish()
-
-    def finish(self) -> None:
-        assert self.current is not None
-        self.current.set_result(None)
-
-
-class Clock:
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def __call__(self) -> float:
-        return self.now
 
 
 def service(
@@ -69,9 +20,15 @@ def service(
     queue_max: int = 5,
     cooldown: float = 0,
     clock: Clock | None = None,
+    events: EventHub | None = None,
 ) -> PlaybackService:
     return PlaybackService(
-        voice, overlap=overlap, queue_max=queue_max, cooldown=cooldown, clock=clock or Clock()
+        voice,
+        overlap=overlap,
+        queue_max=queue_max,
+        cooldown=cooldown,
+        clock=clock or Clock(),
+        events=events,
     )
 
 
@@ -82,7 +39,7 @@ async def settle() -> None:
 
 
 async def test_interrupt_cuts_off_the_current_sound() -> None:
-    voice = FakeVoice()
+    voice = FakeVoice(channel=HERE)
     playback = service(voice)
     assert await playback.play(GUILD, ALICE, HERE, [b"a"]) == 0
     first = voice.current
@@ -92,7 +49,7 @@ async def test_interrupt_cuts_off_the_current_sound() -> None:
 
 
 async def test_queue_plays_sounds_in_order() -> None:
-    voice = FakeVoice()
+    voice = FakeVoice(channel=HERE)
     playback = service(voice, Overlap.QUEUE)
     assert await playback.play(GUILD, ALICE, HERE, [b"a"]) == 0
     assert await playback.play(GUILD, BOB, HERE, [b"b"]) == 1
@@ -110,7 +67,7 @@ async def test_queue_plays_sounds_in_order() -> None:
 
 
 async def test_queue_length_is_capped() -> None:
-    voice = FakeVoice()
+    voice = FakeVoice(channel=HERE)
     playback = service(voice, Overlap.QUEUE, queue_max=1)
     assert await playback.play(GUILD, ALICE, HERE, [b"a"]) == 0
     assert await playback.play(GUILD, BOB, HERE, [b"b"]) == 1
@@ -120,7 +77,7 @@ async def test_queue_length_is_capped() -> None:
 
 async def test_cooldown_is_per_user() -> None:
     clock = Clock()
-    playback = service(FakeVoice(), cooldown=3, clock=clock)
+    playback = service(FakeVoice(channel=HERE), cooldown=3, clock=clock)
     await playback.play(GUILD, ALICE, HERE, [b"a"])
     clock.now = 1.0
     with pytest.raises(UserError, match=r"in 2\.0 s"):
@@ -131,7 +88,7 @@ async def test_cooldown_is_per_user() -> None:
 
 
 async def test_stop_also_drops_the_queue() -> None:
-    voice = FakeVoice()
+    voice = FakeVoice(channel=HERE)
     playback = service(voice, Overlap.QUEUE)
     for user, frame in ((ALICE, b"a"), (BOB, b"b"), (CAROL, b"c")):
         await playback.play(GUILD, user, HERE, [frame])
@@ -193,3 +150,34 @@ async def test_a_failed_join_is_reported_and_plays_nothing() -> None:
     with pytest.raises(VoiceError, match="Couldn't connect"):
         await service(voice).play(GUILD, ALICE, HERE, [b"a"])
     assert voice.started == []
+
+
+async def test_status_and_leave() -> None:
+    voice = FakeVoice(channel=None)
+    playback = service(voice, Overlap.QUEUE)
+    assert playback.status(GUILD) == Status(channel_id=None, playing=False, queued=0)
+    await playback.play(GUILD, ALICE, HERE, [b"a"])
+    await playback.play(GUILD, BOB, HERE, [b"b"])
+    await settle()
+    assert playback.status(GUILD) == Status(channel_id=HERE, playing=True, queued=1)
+    assert await playback.leave(GUILD) is True
+    await settle()
+    assert playback.status(GUILD) == Status(channel_id=None, playing=False, queued=0)
+    assert voice.started == [[b"a"]]
+    assert await playback.leave(GUILD) is False
+
+
+@pytest.mark.parametrize("overlap", list(Overlap))
+async def test_publishes_status_changes(overlap: Overlap) -> None:
+    events = EventHub()
+    voice = FakeVoice(channel=None)
+    playback = service(voice, overlap, events=events)
+    with events.subscribe(GUILD) as subscription:
+        await playback.play(GUILD, ALICE, HERE, [b"a"])  # joins, then starts
+        await settle()
+        assert [event.topic for event in await subscription.next()] == [Topic.STATUS]
+        voice.finish()  # the sound ends on its own
+        await settle()
+        assert [event.topic for event in await subscription.next()] == [Topic.STATUS]
+        await playback.stop(GUILD)
+        assert [event.topic for event in await subscription.next()] == [Topic.STATUS]

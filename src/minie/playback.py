@@ -2,7 +2,8 @@
 channel, then interrupt or queue.
 
 These rules sit above `VoicePlayer`, so they stay the same whichever voice implementation
-is plugged in, and whether the trigger is a slash command or, later, the web UI.
+is plugged in, and whether the trigger is a slash command, a panel button or the web UI. Every
+change is published as a `Topic.STATUS` event.
 """
 
 import asyncio
@@ -14,6 +15,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from minie.errors import UserError
+from minie.events import EventHub, Topic
 from minie.voice.base import OpusFrames, VoiceError, VoicePlayer
 
 _log = logging.getLogger(__name__)
@@ -26,6 +28,15 @@ class Overlap(StrEnum):
     """Cut the current sound off. Feels immediate, and spamming can't build up a backlog."""
     QUEUE = "queue"
     """Play after the current sound and any already waiting, up to a maximum queue length."""
+
+
+@dataclass(frozen=True)
+class Status:
+    channel_id: int | None
+    """The bot's voice channel, None when it's in none."""
+    playing: bool
+    queued: int
+    """Sounds waiting after the current one."""
 
 
 @dataclass
@@ -44,12 +55,14 @@ class PlaybackService:
         queue_max: int,
         cooldown: float,
         clock: Callable[[], float] = time.monotonic,
+        events: EventHub | None = None,
     ) -> None:
         self._voice = voice
         self._overlap = overlap
         self._queue_max = queue_max
         self._cooldown = cooldown
         self._clock = clock
+        self._events = events or EventHub()
         self._guilds: dict[int, _Guild] = {}
         self._last_played: dict[tuple[int, int], float] = {}
 
@@ -73,9 +86,13 @@ class PlaybackService:
             await self._go_to(guild_id, channel_id, state)
             if self._overlap is Overlap.INTERRUPT:
                 await self._voice.stop(guild_id)
-                await self._voice.play(guild_id, frames)
+                playback = await self._voice.play(guild_id, frames)
+                playback.add_done_callback(lambda _: self._changed(guild_id))
+                self._changed(guild_id)
                 return 0
-            return self._enqueue(guild_id, state, frames)
+            position = self._enqueue(guild_id, state, frames)
+            self._changed(guild_id)
+            return position
 
     async def stop(self, guild_id: int) -> bool:
         """Stop the current sound and drop the queue. Returns whether there was anything."""
@@ -84,7 +101,28 @@ class PlaybackService:
             had_something = bool(state.queue) or self._voice.is_playing(guild_id)
             state.queue.clear()
             await self._voice.stop(guild_id)
+        self._changed(guild_id)
         return had_something
+
+    async def leave(self, guild_id: int) -> bool:
+        """Stop, drop the queue and leave the voice channel. Returns whether the bot was in one."""
+        state = self._guilds.setdefault(guild_id, _Guild())
+        async with state.lock:
+            was_connected = self._voice.connected_channel_id(guild_id) is not None
+            state.queue.clear()
+            await self._voice.stop(guild_id)
+            # Called even when not connected, to clear a connection left half-open.
+            await self._voice.leave(guild_id)
+        self._changed(guild_id)
+        return was_connected
+
+    def status(self, guild_id: int) -> Status:
+        state = self._guilds.get(guild_id)
+        return Status(
+            channel_id=self._voice.connected_channel_id(guild_id),
+            playing=self._voice.is_playing(guild_id),
+            queued=len(state.queue) if state else 0,
+        )
 
     async def _go_to(self, guild_id: int, channel_id: int, state: _Guild) -> None:
         current = self._voice.connected_channel_id(guild_id)
@@ -95,6 +133,10 @@ class PlaybackService:
         if current is not None and busy:
             raise UserError(f"I'm busy in <#{current}>. Join it, or wait until it's quiet there.")
         await self._voice.join(guild_id, channel_id)
+        self._changed(guild_id)
+
+    def _changed(self, guild_id: int) -> None:
+        self._events.publish(guild_id, Topic.STATUS)
 
     def _check_cooldown(self, guild_id: int, user_id: int) -> None:
         now = self._clock()
@@ -125,6 +167,7 @@ class PlaybackService:
                     return
                 # Wait without re-raising: the voice player logs playback failures itself.
                 await asyncio.wait({playback})
+                self._changed(guild_id)
                 # No await between this check and `worker = None` below, so a sound queued
                 # meanwhile is either picked up here or starts a new worker.
                 if not state.queue:
@@ -132,3 +175,4 @@ class PlaybackService:
                 frames = state.queue.popleft()
         finally:
             state.worker = None
+            self._changed(guild_id)

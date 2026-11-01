@@ -3,31 +3,27 @@
 import discord
 from discord import app_commands
 
-from minie.commands.common import invoking_member, reply, target_channel
-from minie.playback import PlaybackService
-from minie.voice.base import VoicePlayer
+from minie.commands.common import invoking_caller, reply
+from minie.control import Soundboard
 
 
-def register(tree: app_commands.CommandTree, voice: VoicePlayer, playback: PlaybackService) -> None:
+def register(tree: app_commands.CommandTree, soundboard: Soundboard) -> None:
     @tree.command(name="join", description="Join your voice channel")
     async def join(interaction: discord.Interaction) -> None:
-        guild, member = invoking_member(interaction)
-        channel, must_connect = target_channel(voice, guild, member)
+        caller = invoking_caller(interaction)
+        channel_id, must_connect = soundboard.target_channel(caller)
         if not must_connect:
-            await reply(interaction, f"I'm already in {channel.mention}.")
+            await reply(interaction, f"I'm already in <#{channel_id}>.")
             return
         # Connecting takes a voice gateway handshake, UDP IP discovery and the DAVE (MLS)
         # key exchange: often more than the 3 seconds Discord allows for a first answer.
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await playback.join(guild.id, channel.id)
-        await reply(interaction, f"Joined {channel.mention}.")
+        await soundboard.join(caller)
+        await reply(interaction, f"Joined <#{channel_id}>.")
 
     @tree.command(name="leave", description="Leave the voice channel")
     async def leave(interaction: discord.Interaction) -> None:
-        guild, _ = invoking_member(interaction)
-        was_connected = voice.connected_channel_id(guild.id) is not None
+        caller = invoking_caller(interaction)
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await playback.stop(guild.id)  # also drops queued sounds
-        # Called even when not connected, to clear a connection left half-open.
-        await voice.leave(guild.id)
+        was_connected = await soundboard.leave(caller)  # also drops queued sounds
         await reply(interaction, "Left the voice channel." if was_connected else "I wasn't in one.")
