@@ -218,7 +218,13 @@ async def test_status_stop_and_leave(web: Harness) -> None:
     web.presence.names = {HERE: "lounge"}
     await web.sign_in()
     status = await (await web.client.get(f"/api/guilds/{GUILD}/status")).json()
-    assert status == {"channel": None, "playing": False, "queued": 0, "with_you": False}
+    assert status == {
+        "channel": None,
+        "playing": False,
+        "queued": 0,
+        "with_you": False,
+        "can_leave": True,
+    }
 
     await web.post(f"/api/guilds/{GUILD}/play", {"name": "horn"})
     status = await (await web.client.get(f"/api/guilds/{GUILD}/status")).json()
@@ -228,6 +234,34 @@ async def test_status_stop_and_leave(web: Harness) -> None:
     assert await (await web.post(f"/api/guilds/{GUILD}/stop")).json() == {"stopped": True}
     assert await (await web.post(f"/api/guilds/{GUILD}/leave")).json() == {"left": True}
     assert web.voice.channel is None
+
+
+async def test_leave_needs_the_channel_or_manage_server(web: Harness) -> None:
+    web.member(ALICE, ELSEWHERE)
+    web.presence.names = {HERE: "lounge"}
+    web.voice.channel = HERE
+    await web.sign_in()
+    status = await (await web.client.get(f"/api/guilds/{GUILD}/status")).json()
+    assert status["can_leave"] is False
+    refused = await web.post(f"/api/guilds/{GUILD}/leave")
+    assert refused.status == 403
+    assert (await refused.json())["error"].startswith("Join #lounge first")
+    assert web.voice.channel == HERE
+
+
+async def test_errors_call_the_members_own_channel_theirs(web: Harness) -> None:
+    web.member(ALICE, HERE)
+    web.sound("horn")
+    web.presence.hidden_from.add((ALICE, HERE))  # what a placeholder overwrite could suggest
+    await web.sign_in()
+    web.presence.unjoinable[HERE] = f"I'm missing permissions in <#{HERE}>: View Channel."
+    missing = await web.post(f"/api/guilds/{GUILD}/play", {"name": "horn"})
+    assert (await missing.json())["error"] == (
+        "I'm missing permissions in your voice channel: View Channel."
+    )
+    web.presence.unjoinable[HERE] = f"<#{HERE}> is full."
+    full = await web.post(f"/api/guilds/{GUILD}/play", {"name": "horn"})
+    assert (await full.json())["error"] == "Your voice channel is full."
 
 
 async def test_events_follow_changes_from_any_source(web: Harness) -> None:

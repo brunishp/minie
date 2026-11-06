@@ -337,7 +337,7 @@ function renderStatus() {
   }
   $("#status").textContent = text;
   $("#stop").disabled = !(status.with_you && (status.playing || status.queued));
-  $("#leave").disabled = !status.channel;
+  $("#leave").disabled = !(status.channel && status.can_leave);
 }
 
 async function loadSounds() {

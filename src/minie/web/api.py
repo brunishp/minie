@@ -55,13 +55,19 @@ async def _readable(request: web.Request, message: str) -> str:
     caller = request.get(CALLER)
     names: dict[str, str] = {}
     for channel_id in set(_CHANNEL_MENTION.findall(message)):
+        # They're in it, so never "a channel you can't see", even when the bot can't view it
+        # and only has a placeholder to go on.
+        if caller is not None and int(channel_id) == caller.voice_channel_id:
+            names[channel_id] = "your voice channel"
+            continue
         name = None
         if caller is not None:
             name = await request.app[SERVICES].presence.visible_channel_name(
                 caller, int(channel_id)
             )
         names[channel_id] = f"#{name}" if name else "a channel you can't see"
-    return _CHANNEL_MENTION.sub(lambda match: names[match[1]], message)
+    readable = _CHANNEL_MENTION.sub(lambda match: names[match[1]], message)
+    return readable[:1].upper() + readable[1:]
 
 
 @routes.get("/api/guilds/{guild_id}/sounds")
@@ -102,6 +108,7 @@ async def status(request: web.Request) -> web.Response:
             "queued": current.queued,
             "with_you": current.channel_id is not None
             and current.channel_id == caller.voice_channel_id,
+            "can_leave": services.soundboard.can_leave(caller),
         }
     )
 

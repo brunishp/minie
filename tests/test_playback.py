@@ -5,7 +5,7 @@ from fakes import Clock, FakeVoice
 
 from minie.errors import UserError
 from minie.events import EventHub, Topic
-from minie.playback import Overlap, PlaybackService, Status
+from minie.playback import BusyError, Overlap, PlaybackService, Status
 from minie.voice.base import VoiceError
 
 GUILD = 1
@@ -181,3 +181,71 @@ async def test_publishes_status_changes(overlap: Overlap) -> None:
         assert [event.topic for event in await subscription.next()] == [Topic.STATUS]
         await playback.stop(GUILD)
         assert [event.topic for event in await subscription.next()] == [Topic.STATUS]
+
+
+async def test_a_busy_refusal_costs_no_cooldown() -> None:
+    voice = FakeVoice(channel=ELSEWHERE)
+    playback = service(voice, cooldown=3)
+    await playback.play(GUILD, ALICE, ELSEWHERE, [b"a"])
+    with pytest.raises(BusyError):
+        await playback.play(GUILD, BOB, HERE, [b"b"])
+    voice.finish()
+    await settle()
+    await playback.play(GUILD, BOB, HERE, [b"b"])  # at once, with no "Slow down"
+    assert voice.joins == [HERE]
+
+
+async def test_a_failed_join_costs_no_cooldown() -> None:
+    voice = FakeVoice(channel=None)
+    playback = service(voice, cooldown=3)
+    voice.join_error = VoiceError("Couldn't connect to the voice channel.")
+    with pytest.raises(VoiceError):
+        await playback.play(GUILD, ALICE, HERE, [b"a"])
+    voice.join_error = None
+    await playback.play(GUILD, ALICE, HERE, [b"a"])
+    assert voice.started == [[b"a"]]
+
+
+async def test_a_full_queue_costs_no_cooldown() -> None:
+    voice = FakeVoice(channel=HERE)
+    playback = service(voice, Overlap.QUEUE, queue_max=1, cooldown=3)
+    await playback.play(GUILD, ALICE, HERE, [b"a"])
+    await playback.play(GUILD, BOB, HERE, [b"b"])
+    with pytest.raises(UserError, match="queue is full"):
+        await playback.play(GUILD, CAROL, HERE, [b"c"])
+    await settle()
+    voice.finish()  # "b" starts, so the queue has room again
+    await settle()
+    assert await playback.play(GUILD, CAROL, HERE, [b"c"]) == 1
+
+
+async def test_a_refusal_keeps_a_cooldown_already_running() -> None:
+    clock = Clock()
+    voice = FakeVoice(channel=HERE)
+    playback = service(voice, cooldown=3, clock=clock)
+    await playback.play(GUILD, ALICE, HERE, [b"a"])
+    with pytest.raises(UserError, match="Slow down"):
+        await playback.play(GUILD, ALICE, HERE, [b"b"])
+    clock.now = 3.0
+    await playback.play(GUILD, ALICE, HERE, [b"b"])  # counted from the first sound
+
+
+async def test_a_double_click_during_a_slow_connect_plays_once() -> None:
+    class SlowVoice(FakeVoice):
+        def __init__(self) -> None:
+            super().__init__(channel=None)
+            self.connected = asyncio.Event()
+
+        async def join(self, guild_id: int, channel_id: int) -> None:
+            await self.connected.wait()
+            await super().join(guild_id, channel_id)
+
+    voice = SlowVoice()
+    playback = service(voice, cooldown=3)
+    first = asyncio.create_task(playback.play(GUILD, ALICE, HERE, [b"a"]))
+    await settle()
+    with pytest.raises(UserError, match="Slow down"):  # right away, without waiting for the join
+        await playback.play(GUILD, ALICE, HERE, [b"b"])
+    voice.connected.set()
+    assert await first == 0
+    assert voice.started == [[b"a"]]

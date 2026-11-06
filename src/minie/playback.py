@@ -82,21 +82,27 @@ class PlaybackService:
 
         The bot comes to `channel_id` first if it's in no voice channel, or idle in another.
         """
-        self._check_cooldown(guild_id, user_id)
+        # Started before the first await, so a double click during a slow connect is refused
+        # at once, and given back below if this click ends up playing nothing.
+        earlier = self._start_cooldown(guild_id, user_id)
         state = self._guilds.setdefault(guild_id, _Guild())
-        # Moving and playing under one lock: two members clicking in two channels at once
-        # can't pull the bot back and forth in the middle of a sound.
-        async with state.lock:
-            await self._go_to(guild_id, channel_id, state)
-            if self._overlap is Overlap.INTERRUPT:
-                await self._voice.stop(guild_id)
-                playback = await self._voice.play(guild_id, frames)
-                playback.add_done_callback(lambda _: self._changed(guild_id))
+        try:
+            # Moving and playing under one lock: two members clicking in two channels at once
+            # can't pull the bot back and forth in the middle of a sound.
+            async with state.lock:
+                await self._go_to(guild_id, channel_id, state)
+                if self._overlap is Overlap.INTERRUPT:
+                    await self._voice.stop(guild_id)
+                    playback = await self._voice.play(guild_id, frames)
+                    playback.add_done_callback(lambda _: self._changed(guild_id))
+                    self._changed(guild_id)
+                    return 0
+                position = self._enqueue(guild_id, state, frames)
                 self._changed(guild_id)
-                return 0
-            position = self._enqueue(guild_id, state, frames)
-            self._changed(guild_id)
-            return position
+                return position
+        except BaseException:
+            self._restore_cooldown(guild_id, user_id, earlier)
+            raise
 
     async def stop(self, guild_id: int) -> bool:
         """Stop the current sound and drop the queue. Returns whether there was anything."""
@@ -142,12 +148,20 @@ class PlaybackService:
     def _changed(self, guild_id: int) -> None:
         self._events.publish(guild_id, Topic.STATUS)
 
-    def _check_cooldown(self, guild_id: int, user_id: int) -> None:
+    def _start_cooldown(self, guild_id: int, user_id: int) -> float | None:
+        """Refuse while the member's cooldown runs, else restart it. Returns its previous start."""
         now = self._clock()
         last = self._last_played.get((guild_id, user_id))
         if last is not None and (remaining := self._cooldown - (now - last)) > 0:
             raise UserError(f"Slow down: you can play another sound in {remaining:.1f} s.")
         self._last_played[(guild_id, user_id)] = now
+        return last
+
+    def _restore_cooldown(self, guild_id: int, user_id: int, earlier: float | None) -> None:
+        if earlier is None:
+            self._last_played.pop((guild_id, user_id), None)
+        else:
+            self._last_played[(guild_id, user_id)] = earlier
 
     def _enqueue(self, guild_id: int, state: _Guild, frames: OpusFrames) -> int:
         if state.worker is None:

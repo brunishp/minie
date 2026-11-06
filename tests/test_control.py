@@ -14,6 +14,7 @@ from minie.control import (
     WHOLE_APP,
     Caller,
     DiscordPresence,
+    NotAllowed,
     Soundboard,
 )
 from minie.errors import UserError
@@ -126,7 +127,20 @@ async def test_join_and_leave(world: World) -> None:
     assert await world.soundboard.join(member(ALICE)) == HERE
     assert await world.soundboard.join(member(ALICE)) == HERE  # already there
     assert world.voice.joins == [HERE]
-    assert await world.soundboard.leave(member(BOB, None)) is True
+    assert await world.soundboard.leave(member(ALICE)) is True
+    assert world.voice.channel is None
+
+
+async def test_leaving_is_for_those_in_the_channel_or_a_manager(world: World) -> None:
+    board = world.soundboard
+    assert await board.leave(member(BOB, None)) is False  # in no channel: anyone may clear it
+    await board.join(member(ALICE))
+    for outsider in (member(BOB, ELSEWHERE), member(BOB, None)):
+        assert not board.can_leave(outsider)
+        with pytest.raises(NotAllowed, match="Join <#2> first"):
+            await board.leave(outsider)
+    assert world.voice.channel == HERE
+    assert await board.leave(member(ADMIN, None, manage_guild=True)) is True
     assert world.voice.channel is None
 
 
@@ -194,3 +208,23 @@ async def test_reads_command_restrictions_from_discord() -> None:
     http.fail = True
     with pytest.raises(UserError, match="couldn't check"):
         await presence.restricted_commands(GUILD)
+
+
+@pytest.mark.parametrize(
+    ("viewers", "name"),
+    [
+        ({"member", "bot"}, "lounge"),
+        ({"bot"}, None),  # the member can't see it
+        ({"member"}, None),  # the bot can't, so Discord only sent it a placeholder name
+    ],
+)
+async def test_names_a_channel_only_when_both_can_view_it(
+    viewers: set[str], name: str | None
+) -> None:
+    channel = SimpleNamespace(
+        name="lounge",
+        permissions_for=lambda who: SimpleNamespace(view_channel=who in viewers),
+    )
+    guild = SimpleNamespace(get_channel=lambda _: channel, get_member=lambda _: "member", me="bot")
+    client = cast(discord.Client, SimpleNamespace(get_guild=lambda _: guild))
+    assert await DiscordPresence(client).visible_channel_name(member(ALICE), HERE) == name

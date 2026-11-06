@@ -110,10 +110,15 @@ class DiscordPresence:
         guild = self._client.get_guild(caller.guild_id)
         channel = guild.get_channel(channel_id) if guild is not None else None
         member = await self._member(caller.guild_id, caller.user_id)
-        if channel is None or member is None:
+        if guild is None or channel is None or member is None:
             return None
         # From 2026-11-16 the bot may know channels the member can't see: never name those.
-        return channel.name if channel.permissions_for(member).view_channel else None
+        # And for a channel the bot itself can't view, Discord only sends a placeholder name.
+        readable = (
+            channel.permissions_for(member).view_channel
+            and channel.permissions_for(guild.me).view_channel
+        )
+        return channel.name if readable else None
 
     async def restricted_commands(self, guild_id: int) -> frozenset[str]:
         now = self._clock()
@@ -274,7 +279,18 @@ class Soundboard:
         self.require_listener(caller)
         return await self._playback.stop(caller.guild_id)
 
+    def can_leave(self, caller: Caller) -> bool:
+        """Leaving cuts off whoever is listening, so it's for them to decide, or for a manager.
+
+        With the bot in no channel, anyone may: it only clears a connection left half-open.
+        """
+        channel_id = self._voice.connected_channel_id(caller.guild_id)
+        return channel_id in (None, caller.voice_channel_id) or caller.manage_guild
+
     async def leave(self, caller: Caller) -> bool:
+        if not self.can_leave(caller):
+            channel_id = self._voice.connected_channel_id(caller.guild_id)
+            raise NotAllowed(f"Join <#{channel_id}> first, or ask someone with Manage Server.")
         return await self._playback.leave(caller.guild_id)
 
     def can_manage(self, caller: Caller, sound: Sound) -> bool:

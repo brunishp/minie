@@ -55,7 +55,7 @@ def render(sounds: Sequence[Sound], page: int) -> Drawing:
     count = f"{len(sounds)} sound{'s' if len(sounds) > 1 else ''}"
     content = (
         f"**Soundboard** · page {page + 1}/{pages} · {count}\n"
-        "Click a sound while you're in my voice channel."
+        "Click a sound from any voice channel, and I'll join you."
     )
     return Drawing(content, view, page)
 

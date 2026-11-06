@@ -92,7 +92,7 @@ uv run --env-file .env minie run
 | Command | What it does |
 |---|---|
 | `/join` | Joins your voice channel, self-deafened since it never listens. Rarely needed: playing a sound brings the bot along |
-| `/leave` | Leaves the voice channel and drops any queued sounds |
+| `/leave` | Leaves the voice channel and drops any queued sounds. For members in that channel, and members with Manage Server |
 | `/play [sound]` | Plays a sound, with autocomplete on the server's sounds. Without a name, plays a one-second test tone |
 | `/stop` | Stops the current sound and clears the queue |
 | `/add <name> <file>` | Adds a sound from an attached audio file: MP3, WAV, Ogg, FLAC, M4A or WebM |
@@ -105,7 +105,8 @@ uv run --env-file .env minie run
 - Playing a sound (`/play` or a panel button) from a voice channel brings the bot there if
   it's in no voice channel, or idle in another one. It's never pulled away while it plays or
   has sounds queued, by `/join` or anything else: the member is told where it's busy instead.
-  The cooldown and the interrupt or queue rule apply to clicks too.
+  The cooldown and the interrupt or queue rule apply to clicks too; a click that plays
+  nothing doesn't use up the cooldown.
 - `/stop` and the panel's ⏹ only work for members in the bot's voice channel.
 - Discord plays its join sound whenever the bot (or anyone) joins a channel. Each member's
   app plays it, and no bot can turn it off. The bot stays connected once it has joined, so
@@ -171,7 +172,8 @@ visits after a restart of the bot, sign you in again without asking.
 
 - Every action follows the same rules as the slash commands: playing brings the bot to your
   voice channel unless it's busy elsewhere, the cooldown applies, ⏹ Stop needs you in the bot's
-  channel, and only the uploader (or Manage Server) can rename or remove a sound.
+  channel, Leave does too unless you have Manage Server, and only the uploader (or Manage
+  Server) can rename or remove a sound.
 - If a server restricts a command in Server Settings › Integrations, the web UI refuses the
   matching action (`/play`, `/stop`, `/leave`, `/add`, `/rename`, `/remove`) for everyone,
   and points to the slash command, which Discord checks properly.

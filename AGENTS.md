@@ -35,7 +35,8 @@ description change. The bot deliberately doesn't sync at startup.
 - **Where the bot goes.** Only `PlaybackService` (`join`, `play`, `leave`) connects, moves or
   disconnects the bot, under its per-guild lock, and never away from a channel where it plays
   or has a queue. Callers check permissions first with `Soundboard.target_channel`, and defer
-  when it says a connection is needed.
+  when it says a connection is needed. Only members in its channel, or with Manage Server, can
+  make it leave (`Soundboard.can_leave`).
 - **Rules outside the commands.** Upload rules live in `library.py`, playback rules (cooldown,
   interrupt or queue) in `playback.py`, and who may do what in `control.py`: `Soundboard`,
   which sees members as a `Caller` and asks Discord questions through the `Presence` seam.
