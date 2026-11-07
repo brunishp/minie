@@ -1,4 +1,4 @@
-"""/play, /stop, /add, /list, /info, /rename and /remove."""
+"""/play, /stop, /say, /add, /list, /info, /rename and /remove."""
 
 import discord
 from discord import app_commands
@@ -43,6 +43,24 @@ def register(
     async def stop(interaction: discord.Interaction) -> None:
         stopped = await soundboard.stop(invoking_caller(interaction))
         await reply(interaction, "Stopped." if stopped else "Nothing was playing.")
+
+    # Only with a voice configured, so that it doesn't show up where it can't work.
+    if soundboard.can_speak:
+
+        @tree.command(name="say", description="Say something in your voice channel")
+        @app_commands.describe(text="What to say, up to 200 characters")
+        async def say(
+            interaction: discord.Interaction, text: app_commands.Range[str, 1, 200]
+        ) -> None:
+            caller = invoking_caller(interaction)
+            soundboard.check_can_say(caller, text)
+            # Generating speech and maybe joining can take longer than Discord's 3 s.
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            position = await soundboard.play(await soundboard.prepare_speech(caller, text))
+            await reply(
+                interaction,
+                "Saying it." if position == 0 else f"Queued it (position {position}).",
+            )
 
     @tree.command(name="add", description="Add a sound from an audio file")
     @app_commands.describe(name=NAME_RULES, file="MP3, WAV, Ogg, FLAC, M4A or WebM")

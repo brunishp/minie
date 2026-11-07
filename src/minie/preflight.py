@@ -10,12 +10,16 @@ import importlib.metadata
 import platform
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 import discord
 import discord.opus
 
+from minie import speech
 from minie.config import Settings
+from minie.tools import tool_environment
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,7 @@ def run_checks(settings: Settings) -> list[Check]:
         _check_ffmpeg(settings.ffmpeg),
         _check_ffprobe(settings.ffprobe),
         _check_web(settings),
+        _check_piper(settings),
     ]
 
 
@@ -112,8 +117,47 @@ def _check_web(settings: Settings) -> Check:
     )
 
 
+def _check_piper(settings: Settings) -> Check:
+    name = "Piper (/say)"
+    voice = settings.tts_voice
+    if voice is None:
+        return Check(name, True, "off (MINIE_TTS_VOICE is not set)")
+    if not voice.exists():
+        return Check(name, False, f"voice file {voice} not found; see the README")
+    path = shutil.which(settings.piper)
+    if path is None:
+        return Check(name, False, f"{settings.piper} not found; see the README")
+    # A real sentence: the bot relies on the exact log line Piper's program writes, which an
+    # update could change.
+    with tempfile.TemporaryDirectory() as tmp:
+        work_dir = Path(tmp).resolve()
+        try:
+            result = subprocess.run(
+                [path, "-m", str(voice), "-d", str(work_dir)],
+                input="Bonjour.\n",
+                # As the bot runs it. Its output isn't read, and a pipe can make it hang.
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=60,
+                check=False,
+                env=speech.piper_environment(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return Check(name, False, f"could not run it: {exc}")
+        lines = result.stderr.splitlines()
+        written = (speech.written_file(line, work_dir) for line in lines)
+        if not any(file is not None and file.exists() for file in written):
+            said = lines[-1] if lines else "nothing"
+            return Check(name, False, f"it announced no audio file; it said: {said}")
+    return Check(name, True, f"{voice.name} ({path})")
+
+
 def _output(*command: str) -> str:
-    return subprocess.run(command, capture_output=True, text=True, timeout=10, check=False).stdout
+    # With the environment the bot runs these programs in, so the check reflects real use.
+    return subprocess.run(
+        command, capture_output=True, text=True, timeout=10, check=False, env=tool_environment()
+    ).stdout
 
 
 def _version(path: str) -> str:

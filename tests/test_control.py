@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +30,7 @@ HERE, ELSEWHERE = 2, 3
 ALICE, BOB, ADMIN = 10, 11, 12
 TONE = [STEREO_20MS + b"tone"]
 HORN = [STEREO_20MS + b"horn"]
+SPOKEN = [STEREO_20MS + b"spoken"]
 
 
 class World:
@@ -228,3 +230,70 @@ async def test_names_a_channel_only_when_both_can_view_it(
     guild = SimpleNamespace(get_channel=lambda _: channel, get_member=lambda _: "member", me="bot")
     client = cast(discord.Client, SimpleNamespace(get_guild=lambda _: guild))
     assert await DiscordPresence(client).visible_channel_name(member(ALICE), HERE) == name
+
+
+class FakeSpeaker:
+    def __init__(self) -> None:
+        self.said: list[str] = []
+
+    async def frames(self, text: str) -> list[bytes]:
+        self.said.append(text)
+        return SPOKEN
+
+
+def speaking_board(world: World, *, cooldown: float = 0) -> tuple[Soundboard, FakeSpeaker]:
+    speaker = FakeSpeaker()
+    playback = PlaybackService(
+        world.voice, overlap=Overlap.INTERRUPT, queue_max=5, cooldown=cooldown, events=world.events
+    )
+    board = Soundboard(
+        voice=world.voice,
+        playback=playback,
+        library=world.library,
+        presence=world.presence,
+        test_tone=world.tmp_path / "tone.ogg",
+        speaker=speaker,
+    )
+    return board, speaker
+
+
+async def test_say_joins_and_plays_the_speech(world: World) -> None:
+    board, speaker = speaking_board(world)
+    assert board.can_speak
+    prepared = await board.prepare_speech(member(ALICE), "bonjour")
+    assert prepared.must_connect
+    assert prepared.sound is None
+    assert await board.play(prepared) == 0
+    assert speaker.said == ["bonjour"]
+    assert world.voice.joins == [HERE]
+    assert world.voice.started == [SPOKEN]
+
+
+async def test_say_generates_nothing_when_refused(world: World) -> None:
+    board, speaker = speaking_board(world, cooldown=3)
+    with pytest.raises(UserError, match="Join a voice channel"):
+        await board.prepare_speech(member(ALICE, None), "bonjour")
+    with pytest.raises(UserError, match="nothing to say"):
+        await board.prepare_speech(member(ALICE), "...")
+    world.presence.unjoinable[HERE] = "I'm missing permissions in <#2>: Speak."
+    with pytest.raises(UserError, match="Speak"):
+        await board.prepare_speech(member(ALICE), "bonjour")
+    world.presence.unjoinable.clear()
+    await board.play(await board.prepare_speech(member(ALICE), "bonjour"))
+    with pytest.raises(UserError, match="Slow down"):  # no free speech during the cooldown
+        await board.prepare_speech(member(ALICE), "encore")
+    assert speaker.said == ["bonjour"]
+
+
+async def test_say_never_logs_the_text(world: World, caplog: pytest.LogCaptureFixture) -> None:
+    board, _ = speaking_board(world)
+    with caplog.at_level(logging.DEBUG, logger="minie"):
+        await board.prepare_speech(member(ALICE), "un secret bien gardé")
+    assert f"User {ALICE} used /say" in caplog.text
+    assert "secret" not in caplog.text
+
+
+def test_say_is_off_without_a_speaker(world: World) -> None:
+    assert not world.soundboard.can_speak
+    with pytest.raises(UserError, match="isn't set up"):
+        world.soundboard.check_can_say(member(ALICE), "bonjour")

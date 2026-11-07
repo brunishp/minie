@@ -4,10 +4,12 @@ import asyncio
 import json
 import logging
 import subprocess
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 
 from minie.errors import UserError
+from minie.tools import tool_environment
 from minie.voice.base import FRAME_DURATION_MS
 from minie.voice.ogg import read_opus_frames
 
@@ -45,6 +47,7 @@ TOOL_TIMEOUT = 60.0
 # EBU R128's absolute gate: a clip measuring below this has no defined loudness, it's silence.
 SILENCE_LUFS = -70.0
 LOUDNESS_RANGE = 11  # loudnorm's default LRA target
+MAX_SPEECH_SECONDS = 30
 
 
 class AudioError(Exception):
@@ -101,18 +104,9 @@ async def convert_upload(
         *("-f", demuxer, "-t", f"{max_duration + 1:g}", "-i", str(source)),
         *("-map", "0:a:0"),  # first audio stream only; any video or cover art is ignored
     )
-    loudnorm = f"loudnorm=I={loudness_lufs:g}:TP={true_peak_dbtp:g}:LRA={LOUDNESS_RANGE}"
     partial = dest.with_name(dest.name + ".part")
     try:
-        # Two passes: measure, then apply one constant gain (linear=true) computed from
-        # the measurement. loudnorm falls back to dynamic compression only when that gain
-        # would push peaks above the true peak limit.
-        measured = await measure_loudness(ffmpeg, decode, loudnorm)
-        if measured.integrated < SILENCE_LUFS:
-            raise AudioRejected("That clip is silent.")
-        normalise = f"{loudnorm}:{measured.as_loudnorm_options()}:linear=true"
-        await _ffmpeg(ffmpeg, *decode, "-af", normalise, *OPUS_OUTPUT_ARGS, str(partial))
-
+        await _encode_normalised(ffmpeg, decode, partial, loudness_lufs, true_peak_dbtp)
         frames = await asyncio.to_thread(read_opus_frames, partial)
         duration_ms = len(frames) * FRAME_DURATION_MS
         # One frame of slack: the encoder's pre-skip lengthens the start by a few ms.
@@ -126,6 +120,61 @@ async def convert_upload(
         raise AudioRejected("FFmpeg couldn't decode that file.") from exc
     finally:
         partial.unlink(missing_ok=True)
+
+
+async def encode_speech(
+    source: Path,
+    dest: Path,
+    *,
+    ffmpeg: str,
+    pitch: float,
+    loudness_lufs: float,
+    true_peak_dbtp: float,
+) -> None:
+    """Turn a WAV from the speech engine into a sound like any other: same loudness target,
+    same Opus frames. `pitch` multiplies the voice's pitch, leaving its speed alone."""
+    decode = (
+        *_INPUT_RESTRICTIONS,
+        *("-f", "wav", "-t", str(MAX_SPEECH_SECONDS), "-i", str(source)),
+    )
+    rate = await asyncio.to_thread(_sample_rate, source)
+    await _encode_normalised(
+        ffmpeg, decode, dest, loudness_lufs, true_peak_dbtp, before=_pitch_filter(rate, pitch)
+    )
+
+
+def _sample_rate(path: Path) -> int:
+    with wave.open(str(path)) as file:
+        return file.getframerate()
+
+
+def _pitch_filter(rate: int, pitch: float) -> str:
+    if pitch == 1:
+        return ""
+    # asetrate plays the samples faster, which raises pitch and speed together (formants too,
+    # hence the cartoon voice). atempo then brings the speed back without touching the pitch.
+    return f"asetrate={round(rate * pitch)},aresample=48000,atempo={1 / pitch:.4f},"
+
+
+async def _encode_normalised(
+    ffmpeg: str,
+    decode: tuple[str, ...],
+    output: Path,
+    loudness_lufs: float,
+    true_peak_dbtp: float,
+    *,
+    before: str = "",
+) -> None:
+    """Encode to Ogg/Opus at the target loudness. `before` holds filters to apply first."""
+    loudnorm = f"{before}loudnorm=I={loudness_lufs:g}:TP={true_peak_dbtp:g}:LRA={LOUDNESS_RANGE}"
+    # Two passes: measure, then apply one constant gain (linear=true) computed from the
+    # measurement. loudnorm falls back to dynamic compression only when that gain would push
+    # peaks above the true peak limit.
+    measured = await measure_loudness(ffmpeg, decode, loudnorm)
+    if measured.integrated < SILENCE_LUFS:
+        raise AudioRejected("That clip is silent.")
+    normalise = f"{loudnorm}:{measured.as_loudnorm_options()}:linear=true"
+    await _ffmpeg(ffmpeg, *decode, "-af", normalise, *OPUS_OUTPUT_ARGS, str(output))
 
 
 async def probe(ffprobe: str, path: Path) -> tuple[str, float]:
@@ -193,6 +242,7 @@ async def _run(*command: str) -> tuple[int, str, str]:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=tool_environment(),
         )
     except FileNotFoundError as exc:
         raise AudioError(f"{command[0]} not found") from exc
@@ -213,7 +263,9 @@ async def _run(*command: str) -> tuple[int, str, str]:
 def run_ffmpeg(ffmpeg: str, *args: str) -> None:
     command = [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", "-y", *args]
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            command, capture_output=True, text=True, check=False, env=tool_environment()
+        )
     except FileNotFoundError as exc:
         raise AudioError(f"{ffmpeg} not found") from exc
     if result.returncode != 0:

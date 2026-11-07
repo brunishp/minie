@@ -249,3 +249,15 @@ async def test_a_double_click_during_a_slow_connect_plays_once() -> None:
     voice.connected.set()
     assert await first == 0
     assert voice.started == [[b"a"]]
+
+
+async def test_checking_the_cooldown_does_not_start_it() -> None:
+    clock = Clock()
+    playback = service(FakeVoice(channel=HERE), cooldown=3, clock=clock)
+    playback.check_cooldown(GUILD, ALICE)
+    playback.check_cooldown(GUILD, ALICE)
+    await playback.play(GUILD, ALICE, HERE, [b"a"])
+    with pytest.raises(UserError, match="Slow down"):
+        playback.check_cooldown(GUILD, ALICE)
+    clock.now = 3.0
+    playback.check_cooldown(GUILD, ALICE)

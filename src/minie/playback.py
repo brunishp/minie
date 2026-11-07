@@ -148,14 +148,18 @@ class PlaybackService:
     def _changed(self, guild_id: int) -> None:
         self._events.publish(guild_id, Topic.STATUS)
 
+    def check_cooldown(self, guild_id: int, user_id: int) -> None:
+        """Refuse while the member's cooldown runs, without starting it."""
+        last = self._last_played.get((guild_id, user_id))
+        if last is not None and (remaining := self._cooldown - (self._clock() - last)) > 0:
+            raise UserError(f"Slow down: you can play another sound in {remaining:.1f} s.")
+
     def _start_cooldown(self, guild_id: int, user_id: int) -> float | None:
         """Refuse while the member's cooldown runs, else restart it. Returns its previous start."""
-        now = self._clock()
-        last = self._last_played.get((guild_id, user_id))
-        if last is not None and (remaining := self._cooldown - (now - last)) > 0:
-            raise UserError(f"Slow down: you can play another sound in {remaining:.1f} s.")
-        self._last_played[(guild_id, user_id)] = now
-        return last
+        self.check_cooldown(guild_id, user_id)
+        earlier = self._last_played.get((guild_id, user_id))
+        self._last_played[(guild_id, user_id)] = self._clock()
+        return earlier
 
     def _restore_cooldown(self, guild_id: int, user_id: int, earlier: float | None) -> None:
         if earlier is None:

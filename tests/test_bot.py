@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
+from pathlib import Path
 
 from minie.bot import MinieBot
 from minie.commands.sounds import _format_info
 from minie.config import Settings
+from minie.speech import MAX_TEXT
 from minie.store import Sound
 
 
@@ -42,3 +44,12 @@ def test_info_uses_mentions_and_local_timestamps() -> None:
     text = _format_info(Sound("id", 1, "horn", 42, 2400, added))
     stamp = int(added.timestamp())
     assert text == f"`horn` · 2.4 s\nAdded by <@42> on <t:{stamp}:D> (<t:{stamp}:R>)"
+
+
+def test_say_only_exists_with_a_voice() -> None:
+    assert MinieBot(Settings()).tree.get_command("say") is None
+    bot = MinieBot(Settings(tts_voice=Path("voice.onnx")))
+    command = bot.tree.get_command("say")
+    assert command is not None
+    option = command.to_dict(bot.tree)["options"][0]
+    assert (option["name"], option["min_length"], option["max_length"]) == ("text", 1, MAX_TEXT)

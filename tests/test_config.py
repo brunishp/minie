@@ -73,6 +73,9 @@ def test_sound_limits_and_playback_rules() -> None:
         ("MINIE_WEB_PORT", "70000"),
         ("MINIE_WEB_PUBLIC_URL", "localhost:8080"),
         ("MINIE_WEB_PUBLIC_URL", "https://minie.example/sub"),
+        ("MINIE_TTS_PITCH", "3"),
+        ("MINIE_TTS_PITCH", "0.1"),
+        ("MINIE_TTS_KEEP_S", "-1"),
     ],
 )
 def test_rejects_malformed_values(key: str, value: str) -> None:
@@ -94,6 +97,22 @@ def test_web_ui_settings() -> None:
     )
     assert public.web_url == "https://minie.example"
     assert public.oauth_client_secret == "s3cret"
+
+
+def test_speech_settings() -> None:
+    off = Settings.from_env({})
+    assert off.tts_voice is None
+    assert (off.piper, off.tts_pitch, off.tts_keep) == ("piper", 1.3, 300)
+    on = Settings.from_env(
+        {
+            "MINIE_TTS_VOICE": " data/voices/siwis.onnx ",
+            "MINIE_PIPER": "/opt/piper",
+            "MINIE_TTS_PITCH": "1.25",
+            "MINIE_TTS_KEEP_S": "0",
+        }
+    )
+    assert on.tts_voice == Path("data/voices/siwis.onnx")
+    assert (on.piper, on.tts_pitch, on.tts_keep) == ("/opt/piper", 1.25, 0)
 
 
 def test_web_check_needs_the_client_secret() -> None:

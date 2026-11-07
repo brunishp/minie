@@ -51,6 +51,14 @@ class Settings:
     """Where browsers reach the web UI; defaults to http://localhost:<port>."""
     oauth_client_secret: str | None = field(default=None, repr=False)
 
+    tts_voice: Path | None = None
+    """The Piper voice model for /say; None leaves /say off."""
+    piper: str = "piper"
+    tts_pitch: float = 1.3
+    """Multiplies the voice's pitch; its speed stays the same."""
+    tts_keep: float = 300.0
+    """Seconds Piper stays loaded after its last use; 0 stops it after every sentence."""
+
     @property
     def web_url(self) -> str:
         """The web UI's public origin, without a trailing slash."""
@@ -82,6 +90,11 @@ class Settings:
             web_host=env.get("MINIE_WEB_HOST", "").strip() or cls.web_host,
             web_public_url=_origin(env, "MINIE_WEB_PUBLIC_URL"),
             oauth_client_secret=env.get("MINIE_OAUTH_CLIENT_SECRET", "").strip() or None,
+            tts_voice=Path(voice) if (voice := env.get("MINIE_TTS_VOICE", "").strip()) else None,
+            piper=env.get("MINIE_PIPER", "").strip() or "piper",
+            # atempo, which corrects the speed, accepts factors from 0.5 upwards.
+            tts_pitch=_number(env, "MINIE_TTS_PITCH", cls.tts_pitch, 0.5, 2),
+            tts_keep=_number(env, "MINIE_TTS_KEEP_S", cls.tts_keep, 0, 86400),
         )
 
     def require_token(self) -> str:

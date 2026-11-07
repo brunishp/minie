@@ -95,6 +95,7 @@ uv run --env-file .env minie run
 | `/leave` | Leaves the voice channel and drops any queued sounds. For members in that channel, and members with Manage Server |
 | `/play [sound]` | Plays a sound, with autocomplete on the server's sounds. Without a name, plays a one-second test tone |
 | `/stop` | Stops the current sound and clears the queue |
+| `/say <text>` | Says up to 200 characters in your voice channel. Only with text to speech set up (see below) |
 | `/add <name> <file>` | Adds a sound from an attached audio file: MP3, WAV, Ogg, FLAC, M4A or WebM |
 | `/list` | Lists the server's sounds with their lengths |
 | `/info <sound>` | Shows who added a sound, when, and its length |
@@ -141,9 +142,51 @@ All optional, in `.env`:
 | `MINIE_WEB_HOST` | `127.0.0.1` | Address the web UI listens on |
 | `MINIE_WEB_PUBLIC_URL` | `http://localhost:<port>` | Address browsers use, and base of the sign-in redirect |
 | `MINIE_OAUTH_CLIENT_SECRET` | unset | Required with the web UI (see below); a secret like the token |
+| `MINIE_TTS_VOICE` | unset | Piper voice file; turns `/say` on (see below) |
+| `MINIE_PIPER` | `piper` | The Piper program |
+| `MINIE_TTS_PITCH` | `1.3` | Multiplies the voice's pitch, from 0.5 to 2; its speed stays the same |
+| `MINIE_TTS_KEEP_S` | `300` | Seconds Piper stays loaded after its last use; `0` stops it after every sentence |
 
 `interrupt` is the default because it feels immediate, and spamming `/play` can't build up a
 backlog of sounds.
+
+## Text to speech
+
+`/say` speaks in a French voice with a raised pitch, which gives a squeaky cartoon voice rather
+than anyone's in particular. It's off until you set it up.
+
+1. Install [Piper](https://github.com/OHF-Voice/piper1-gpl) as its own program. Keep to this
+   version unless you've checked a newer one with `minie check`: the bot relies on a log line
+   the program writes. Python is pinned because `onnxruntime`, which Piper needs, has no 3.15
+   builds yet.
+
+   ```bash
+   uv tool install --python 3.14 piper-tts==1.8.0
+   ```
+
+2. Download the voice (about 60 MB). `data/` is git-ignored.
+
+   ```bash
+   uvx --python 3.14 --from piper-tts==1.8.0 python -m piper.download_voices --download-dir data/voices fr_FR-siwis-medium
+   ```
+
+3. In `.env`, set `MINIE_TTS_VOICE=data/voices/fr_FR-siwis-medium.onnx`.
+4. Run `minie check`, which tries a real sentence, then `minie sync`, and restart the bot.
+
+How it behaves:
+
+- `/say` follows the same rules as a sound: it brings the bot to your channel unless it's busy
+  elsewhere, and the cooldown and the interrupt or queue rule apply. To restrict it to some
+  roles, use Server Settings › Integrations.
+- Mentions and custom emoji are left out, since they'd be read as long strings of digits.
+- The log records who used `/say`, never what they said.
+- Piper stays loaded for 5 minutes after its last use, then exits and frees its memory. Measured
+  on an Apple Silicon Mac: about 235 MiB while loaded, about 1.1 s to load, about 0.1 s for a
+  sentence after that. Expect a slower load on a small container.
+
+Licences: Piper is GPL-3.0-or-later and runs as a separate program, so it's neither part of this
+repository nor one of its dependencies. The Siwis voice was trained on a
+[dataset](https://datashare.is.ed.ac.uk/handle/10283/2353) under CC-BY 4.0.
 
 ## Web UI
 
@@ -220,6 +263,8 @@ Uploaded files are untrusted input to FFmpeg, so:
   gets no network access (`-protocol_whitelist file`). Some formats, such as HLS playlists, make
   FFmpeg open other files or URLs named inside them; those are refused before they're parsed.
 - Each FFmpeg run is killed after 60 s, and at most two conversions run at once.
+- FFmpeg and Piper start with a minimal environment, so the bot's token and client secret
+  aren't among their variables.
 - Tags and chapters are stripped, and files are stored under random names.
 
 FFmpeg's decoders still parse the upload. The container the bot runs in is the isolation
@@ -273,6 +318,8 @@ src/minie/
 ├── store.py                    # SQLite metadata, with numbered schema migrations
 ├── audio.py                    # FFmpeg: probe, loudness, encode once to Ogg/Opus (20 ms frames)
 ├── playback.py                 # cooldown, then interrupt or queue, above VoicePlayer
+├── speech.py                   # text to speech for /say: runs Piper, then FFmpeg
+├── tools.py                    # the minimal environment external programs get
 ├── web/                        # web UI (aiohttp): sign-in, JSON API, live events, static page
 └── voice/
     ├── base.py                 # VoicePlayer: the interface the rest of the bot uses

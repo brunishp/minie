@@ -16,6 +16,7 @@ from minie.control import DiscordPresence, Soundboard
 from minie.events import EventHub, Topic
 from minie.library import SoundLibrary
 from minie.playback import PlaybackService
+from minie.speech import PiperWorker, Speech
 from minie.store import SoundStore
 from minie.voice.base import VoicePlayer
 from minie.voice.discordpy import DiscordPyVoicePlayer
@@ -50,12 +51,27 @@ class MinieBot(discord.Client):
             events=self.events,
         )
         self.presence = DiscordPresence(self)
+        self.speech = None
+        if settings.tts_voice is not None:
+            self.speech = Speech(
+                PiperWorker(
+                    settings.piper,
+                    settings.tts_voice,
+                    settings.data_dir / "tmp" / "speech",
+                    keep=settings.tts_keep,
+                ),
+                ffmpeg=settings.ffmpeg,
+                pitch=settings.tts_pitch,
+                loudness_lufs=settings.loudness_lufs,
+                true_peak_dbtp=settings.true_peak_dbtp,
+            )
         self.soundboard = Soundboard(
             voice=self.voice,
             playback=self.playback,
             library=self.library,
             presence=self.presence,
             test_tone=self.test_tone,
+            speaker=self.speech,
         )
         self.tree = app_commands.CommandTree(
             self,
@@ -109,6 +125,8 @@ class MinieBot(discord.Client):
         for task in self._background:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        if self.speech is not None:
+            await self.speech.close()
         await super().close()
         self.store.close()
 

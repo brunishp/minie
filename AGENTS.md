@@ -76,9 +76,26 @@ description change. The bot deliberately doesn't sync at startup.
   passes `audio._INPUT_RESTRICTIONS` (demuxer allowlist, `file` protocol only) and forces the
   probed demuxer with `-f`. Check durations on decoded output, not on container metadata.
   Conversions are bounded: timeout, `-t`, `MAX_CONCURRENT_CONVERSIONS`.
+- **Text to speech** (`speech.py`; `/say` only exists when `MINIE_TTS_VOICE` is set):
+  - Piper is a separate program, like FFmpeg, never imported: its GPL code stays out of this
+    repository and its dependencies. A worker script of ours importing it would undo that.
+  - `PiperWorker` drives its command-line loop: one line in, one WAV out, and the
+    `Wrote <path>` line on stderr is the only completion signal. `minie check` tries a real
+    sentence, so a Piper update that changes this shows up there. Only files in the work
+    directory count, since the bot reads and deletes them. Anything unfinished kills the
+    process, or the next sentence would read the wrong answer.
+  - Text is untrusted: `speakable` flattens it to one line (a line break would be a second
+    request) and refuses punctuation alone (Piper's program exits with an error on it). Never
+    log the text.
+  - A long install path breaks Piper's espeak-ng: it worked at 107 characters and failed at
+    184, with an error naming a path on Piper's build machine (`phontab`). The default
+    `uv tool` location is fine; a deep custom `UV_TOOL_DIR` isn't.
 - **Secrets.** The token and the OAuth client secret come only from the environment (`.env` is
   git-ignored). Never log tokens or voice keys; `log.RedactSecrets` masks discord.py's gateway
-  dumps. Keep `repr=False` on secret settings.
+  dumps. Keep `repr=False` on secret settings. Start every external program with
+  `env=tools.tool_environment()`, an allowlist. That's defence in depth, not isolation: a
+  compromised program under the same user could still read `.env` or the bot's
+  `/proc/<pid>/environ`, so real isolation needs a separate user or sandbox.
 - **Least privilege.** Intents are `Intents.none()` plus `guilds` and `voice_states`. Invite
   permissions are View Channel, Connect and Speak. No privileged intents, no message content.
   Web sign-in asks only for the `identify` and `guilds` scopes.
@@ -120,6 +137,7 @@ description change. The bot deliberately doesn't sync at startup.
   weigh that first.
 - Deployment: a systemd unit and update script for the Proxmox LXC container, on the
   `deploy-service` branch until the maintainer decides to run the bot as a service.
+- `/say` in the web UI: a text box, with `_check_command(..., "say")` like the other actions.
 - Web UI, next steps:
   - Play on this device: a second `target` in `static/app.js`. Serve the Ogg/Opus file at
     `GET …/sounds/{id}/audio` (immutable: IDs are random and files never change), decode with

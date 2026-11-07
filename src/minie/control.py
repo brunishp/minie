@@ -6,6 +6,7 @@ both, as `FakeVoice` stands in for the voice layer.
 """
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,9 +18,12 @@ import discord
 from minie.errors import UserError
 from minie.library import SoundLibrary
 from minie.playback import PlaybackService
+from minie.speech import speakable
 from minie.store import Sound
 from minie.voice.base import VoicePlayer
 from minie.voice.ogg import read_opus_frames
+
+_log = logging.getLogger(__name__)
 
 # How long a member fetched over REST counts as current. Roles (hence permissions) can be up to
 # this old; members in voice are always current, from the gateway cache.
@@ -207,8 +211,14 @@ class PreparedSound:
     must_connect: bool
     """Playing it connects the bot first, which can take longer than Discord's 3 s deadline."""
     sound: Sound | None
-    """None for the test tone."""
+    """None for the test tone and for speech."""
     frames: list[bytes]
+
+
+class Speaker(Protocol):
+    """Turns text into 20 ms Opus frames."""
+
+    async def frames(self, text: str) -> list[bytes]: ...
 
 
 class Soundboard:
@@ -220,12 +230,18 @@ class Soundboard:
         library: SoundLibrary,
         presence: Presence,
         test_tone: Path,
+        speaker: Speaker | None = None,
     ) -> None:
         self._voice = voice
         self._playback = playback
         self._library = library
         self._presence = presence
         self._test_tone = test_tone
+        self._speaker = speaker
+
+    @property
+    def can_speak(self) -> bool:
+        return self._speaker is not None
 
     def target_channel(self, caller: Caller) -> tuple[int, bool]:
         """The caller's voice channel, and whether the bot has to connect to it first.
@@ -267,6 +283,24 @@ class Soundboard:
             sound = self._library.find(caller.guild_id, name)
             frames = await self._library.frames(sound)
         return PreparedSound(caller, channel_id, must_connect, sound, frames)
+
+    def check_can_say(self, caller: Caller, text: str) -> None:
+        """Refuse before any of the slow work starts, cooldown included: generating speech is
+        the one thing a member could otherwise make the bot do over and over for free."""
+        if not self.can_speak:
+            raise UserError("Text to speech isn't set up.")
+        speakable(text)
+        self.target_channel(caller)
+        self._playback.check_cooldown(caller.guild_id, caller.user_id)
+
+    async def prepare_speech(self, caller: Caller, text: str) -> PreparedSound:
+        self.check_can_say(caller, text)
+        assert self._speaker is not None
+        channel_id, must_connect = self.target_channel(caller)
+        # Who, not what: the text stays out of the logs.
+        _log.info("User %s used /say in guild %s", caller.user_id, caller.guild_id)
+        frames = await self._speaker.frames(text)
+        return PreparedSound(caller, channel_id, must_connect, None, frames)
 
     async def play(self, prepared: PreparedSound) -> int:
         """Returns the queue position, 0 meaning now."""
